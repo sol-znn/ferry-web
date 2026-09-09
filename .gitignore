@@ -1,0 +1,35 @@
+# Build output. The site is rebuilt from source on every deploy, so none of it
+# is committed — including the WebAssembly module and Go's runtime shim, which
+# have to be produced by the same Go toolchain as each other and would rot the
+# moment one was committed and the other regenerated.
+dist/
+dist-dev/
+ui/public/ferry.wasm
+ui/public/wasm_exec.js
+
+node_modules/
+npm-debug.log*
+*.log
+
+# Go: test binaries and coverage output, neither of which belongs in the tree.
+*.test
+*.out
+*.exe
+
+# Vite's dependency cache.
+.vite/
+ui/.vite/
+
+# Deploy state and anything carrying credentials.
+.vercel
+.env*
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+.claude/

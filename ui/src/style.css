@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+@import 'nom-ui/style.css';
+@source "../node_modules/nom-ui/src";
+
+/* The waiting dot (see Waiting.vue). Two animations on two stacked circles:
+   `wait-core` flashes the dot itself, `wait-bloom` sends a copy of it swelling
+   outward and fading, which is the part the eye catches from across a page.
+   Tailwind's own `animate-ping` is the same idea but pinned to its own timing
+   and opacity; these are slower and softer, because this sits inside a line of
+   text and has to pull attention without becoming a strobe.
+
+   Deliberately NOT gated behind `motion-safe`. This dot is the only moving
+   thing marking whose turn it is, and a card that stops dead reads as broken —
+   so it runs even when the OS asks for reduced motion. That is a real
+   trade-off against people who set that preference for vestibular reasons; the
+   mitigation is that the movement is opacity and scale only, never position,
+   and both cycles are slow. */
+@theme {
+  --animate-wait-core: wait-core 1.6s ease-in-out infinite;
+  --animate-wait-bloom: wait-bloom 1.6s ease-out infinite;
+
+  @keyframes wait-core {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes wait-bloom {
+    0% {
+      opacity: 0.5;
+      transform: scale(1);
+    }
+    70%,
+    100% {
+      opacity: 0;
+      transform: scale(3);
+    }
+  }
+}

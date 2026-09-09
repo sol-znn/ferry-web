@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<!-- Matches --background in both themes so mobile browser chrome does not clash. -->
+<meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<!--
+  A static host does not let us set headers, so the Content-Security-Policy
+  lives in the document. A meta policy is weaker in one specific way — frame-ancestors is
+  ignored in meta form, so framing cannot be refused from here — but every other
+  directive applies identically, and script-src is the one that matters for a
+  page holding keys.
+
+  Two directives are deliberately not what a template would put here:
+
+  - 'wasm-unsafe-eval' is required. Without it the browser refuses to compile
+    WebAssembly at all, and the compiled module is the entire application. It
+    permits WebAssembly compilation and nothing else — not eval, not new
+    Function — so it is a far narrower grant than its name suggests.
+
+  - connect-src is open, and that is a real limitation rather than an oversight.
+    The point of Node settings is that you choose which Esplora and which Zenon
+    node to trust, and an allowlist here would mean this page decides that for
+    you. So the anti-exfiltration value of connect-src is traded away to keep
+    the trust choice yours; script-src is what stops a script that would use it.
+    See docs/SECURITY.md.
+
+  'unsafe-inline' appears under style-src only: Vue writes style attributes for
+  the progress bar and the design system's popovers position themselves the same
+  way. Injected CSS cannot read a private key.
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' 'wasm-unsafe-eval';
+  style-src 'self' 'unsafe-inline';
+  font-src 'self';
+  img-src 'self' data:;
+  connect-src *;
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none'">
+<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<title>Ferry — BTC/ZNN atomic swaps</title>
+</head>
+<body>
+<!-- Painted before Vue mounts and torn out by it, so the multi-megabyte
+     WebAssembly download does not happen behind a blank page. -->
+<div id="app"><div class="boot">Loading the signing engine…</div></div>
+<style>
+  .boot {
+    display: grid;
+    min-height: 60vh;
+    place-items: center;
+    color: #8a8a8a;
+    font: 14px/1.5 system-ui, sans-serif;
+  }
+</style>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
