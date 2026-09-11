@@ -1499,14 +1499,16 @@ async function downloadRecovery() {
         <p>
           The contract holds {{ sats(swap.funding?.value ?? 0) }} against the
           {{ sats(swap.amountSats) }} agreed. Redeeming it would publish your secret, and that is
-          what lets the counterparty unlock the ZNN you lock for them &mdash; in full, against a
-          payment they chose to leave short.
+          what lets the counterparty unlock the Zenon leg you lock for them &mdash; in full, against
+          a payment they chose to leave short.
         </p>
         <p class="mt-2">
-          Wait for the full amount; Refresh keeps looking for an output that covers it. Do not
-          create your Zenon HTLC against this funding. If you decide to take the partial payment
-          anyway, do it only once your Zenon HTLC has expired and been reclaimed, or was never
-          created: the Recover page builds that redeem from this swap's recovery file.
+          What clears this is a single payment to the contract for the full agreed amount: Refresh
+          keeps looking for one, and switches to it when it appears. Several smaller payments are
+          not added together. Do not create your Zenon HTLC against this funding. If you decide to
+          take the partial payment anyway, do it only once your Zenon HTLC has expired and been
+          reclaimed, or was never created: the Recover page builds that redeem from this swap's
+          recovery file, and broadcasting it publishes the secret.
         </p>
       </Note>
 

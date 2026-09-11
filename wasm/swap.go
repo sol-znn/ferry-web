@@ -363,8 +363,9 @@ func (s *Swap) SecretArrivesOnZenon() bool {
 // RedeemRevealsSecret reports whether this side's Bitcoin redeem would be the
 // FIRST publication of the secret. That is the initiator on the receiving leg:
 // the secret was generated here and has been nowhere else, and the redeem puts
-// it in a witness on a public chain -- which is exactly what lets the
-// counterparty unlock the Zenon HTLC this user locked for them.
+// it in the spending transaction's signature script, on a public chain -- which
+// is exactly what lets the counterparty unlock the Zenon HTLC this user locked
+// for them.
 //
 // The participant on the same leg is the opposite case. Their secret came off
 // the counterparty's Zenon unlock, so it is already public and their redeem
