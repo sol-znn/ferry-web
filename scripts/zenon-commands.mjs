@@ -14,6 +14,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const { createCliCreateGate } = await import(
+  pathToFileURL(resolve(here, "../ui/src/core/cli-create-gate.ts")).href
+);
 const { znnCommands } = await import(
   pathToFileURL(resolve(here, "../ui/src/core/zenon-commands.ts")).href
 );
@@ -150,6 +153,129 @@ ok(
     secretHex: "cd".repeat(32),
   }).some((l) => l.startsWith("znn-cli htlc.unlock ")),
 );
+
+section("text from outside cannot become a command when the block is pasted");
+for (const [name, evil] of [
+  ["a newline", "backend failed\nprintf PWNED"],
+  ["a carriage return", "backend failed\rprintf PWNED"],
+  ["CRLF", "backend failed\r\nprintf PWNED"],
+]) {
+  const sw = { ...base, fundingCommitted: false, fundingCommitBlocker: evil };
+  const text = znnCommands(sw, { createAllowed: false, createBlocker: evil });
+  const bare = text.split(/\r\n|\r|\n/).filter((l) => l && !l.startsWith("#"));
+  ok(
+    `${name} in the reason leaves no uncommented line but the reclaim`,
+    bare.length === 1 && bare[0].startsWith("znn-cli htlc.reclaim "),
+    JSON.stringify(bare),
+  );
+  ok(
+    `${name}: the injected text is still visible, as a comment`,
+    text.includes("# printf PWNED"),
+  );
+}
+
+section(
+  "the card's authorisation lifecycle: asking revokes, latest wins, passes expire",
+);
+{
+  // A check whose answer this test controls, and a clock it advances by hand.
+  let clock = 1_000_000;
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise(
+      (res, rej) => ((resolve = res), (reject = rej)),
+    );
+    return { promise, resolve, reject };
+  };
+  const answers = [];
+  const gate = createCliCreateGate({
+    check: () => answers.shift().promise,
+    ttlMs: 45_000,
+    now: () => clock,
+  });
+  ok("withheld before anything was asked", gate.state().allowed === false);
+
+  // 1. A pass, then a re-check that has not answered: withheld while pending.
+  const first = deferred();
+  answers.push(first);
+  const run1 = gate.run();
+  first.resolve({ ok: true });
+  await run1;
+  ok("a pass allows", gate.state().allowed === true);
+  const second = deferred();
+  answers.push(second);
+  const run2 = gate.run();
+  ok(
+    "asking again withholds at once, before the answer",
+    gate.state().allowed === false,
+  );
+  second.resolve({ ok: true });
+  await run2;
+  ok("and allows again once it answers", gate.state().allowed === true);
+
+  // 2. An older check answering after a newer refusal must not reopen it.
+  const slow = deferred();
+  const fast = deferred();
+  answers.push(slow, fast);
+  const runSlow = gate.run();
+  const runFast = gate.run();
+  fast.reject(new Error("the funding output is no longer unspent"));
+  await runFast;
+  ok("the newer refusal withholds", gate.state().allowed === false);
+  ok(
+    "and names the reason",
+    gate.state().blocker.includes("no longer unspent"),
+  );
+  slow.resolve({ ok: true });
+  await runSlow;
+  ok(
+    "an older pass arriving later does not reopen it",
+    gate.state().allowed === false,
+  );
+  ok(
+    "nor overwrite the reason",
+    gate.state().blocker.includes("no longer unspent"),
+  );
+
+  // 3. A pass, then the world moves: a settings change revokes; time expires.
+  const third = deferred();
+  answers.push(third);
+  const run3 = gate.run();
+  third.resolve({ ok: true });
+  await run3;
+  ok("a fresh pass allows", gate.state().allowed === true);
+  gate.revoke();
+  ok(
+    "revoking (a settings change, an expired leg) withholds",
+    gate.state().allowed === false,
+  );
+  const fourth = deferred();
+  answers.push(fourth);
+  const run4 = gate.run();
+  fourth.resolve({ ok: true });
+  await run4;
+  clock += 44_000;
+  ok("a pass holds inside its ttl", gate.state().allowed === true);
+  clock += 2_000;
+  ok(
+    "and lapses after it, with no re-check having arrived",
+    gate.state().allowed === false,
+  );
+
+  // 4. A failed check withholds and says why.
+  const fifth = deferred();
+  answers.push(fifth);
+  const run5 = gate.run();
+  fifth.reject(
+    new Error("could not re-read the contract address before locking ZNN"),
+  );
+  await run5;
+  ok("a failed check withholds", gate.state().allowed === false);
+  ok(
+    "and carries the reason",
+    gate.state().blocker.includes("could not re-read"),
+  );
+}
 
 console.log(fails === 0 ? "\nall checks passed" : `\n${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

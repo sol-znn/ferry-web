@@ -39,6 +39,17 @@ export function cliNodeURL(appURL: string | undefined): string {
   return `${secure ? 'wss' : 'ws'}://${u.hostname}:${port}`
 }
 
+/**
+ * Text that is not a command, as comment lines. Every physical line gets its
+ * own `# `, because this block is copied into a terminal and a newline inside
+ * a message -- an error body relayed from a node this browser was pointed at,
+ * say -- would otherwise end the comment and start a command. Carriage returns
+ * count as line breaks for the same reason.
+ */
+export function comment(text: string): string[] {
+  return text.split(/\r\n|\r|\n/).map((l) => `# ${l}`)
+}
+
 /** How the printed commands should name the user's own signing account. */
 export interface CommandContext {
   /** The Zenon node this browser is set to, translated to znn-cli's transport. */
@@ -109,11 +120,13 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
     const waitsOnBtc = sw.btcLegIsInitiators
     if (waitsOnBtc && ctx.createAllowed !== true) {
       lines.push(
-        `# NOT YET: ${
-          ctx.createBlocker ||
-          sw.fundingCommitBlocker ||
-          'their Bitcoin funding has not been checked against the chain just now'
-        }.`,
+        ...comment(
+          `NOT YET: ${
+            ctx.createBlocker ||
+            sw.fundingCommitBlocker ||
+            'their Bitcoin funding has not been checked against the chain just now'
+          }.`,
+        ),
       )
       lines.push('# Your HTLC answers their Bitcoin payment. A payment they can still replace is')
       lines.push('# one they can take back after you lock ZNN, and they already hold the secret.')
