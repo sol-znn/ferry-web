@@ -1234,6 +1234,37 @@ async function downloadRecovery() {
         </div>
       </section>
 
+      <!-- The create is withheld, and why. This is the participant in a swap
+           the Bitcoin side initiated: their ZNN answers a payment that is not
+           yet real, and locking it against one the sender can still replace
+           hands them the ZNN for nothing. Outside the Zenon section on purpose:
+           that section waits for a funding record to exist at all, and the
+           commonest reason to be waiting is that nothing has been paid yet,
+           which is exactly when the explanation is owed. -->
+      <Note
+        v-if="
+          swap.contractAddr &&
+          swap.zenonHtlcIsOurs &&
+          !swap.zenon?.htlcId &&
+          live &&
+          swap.fundingCommitBlocker
+        "
+        variant="warn"
+        summary="Not locking ZNN yet: their Bitcoin funding is not settled"
+      >
+        <p>
+          {{
+            swap.fundingCommitBlocker.charAt(0).toUpperCase() + swap.fundingCommitBlocker.slice(1)
+          }}. Your Zenon HTLC answers that payment, so it waits until the payment is mined and
+          covers the agreed amount. A payment still in a mempool is one its sender can replace
+          &mdash; and they already hold the secret that would open your HTLC.
+        </p>
+        <p class="mt-2">
+          Refresh keeps checking. The create appears &mdash; and runs by itself under Auto Mode
+          &mdash; once it is settled, and the znn-cli command for it is withheld until then too.
+        </p>
+      </Note>
+
       <!-- The Zenon leg -->
       <section v-if="showZenon" class="grid min-w-0 gap-3 rounded-lg border border-border p-3">
         <h3 class="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
@@ -1307,31 +1338,6 @@ async function downloadRecovery() {
           :auto="autoOn"
           @done="zenonDone(zenonAction)"
         />
-        <!-- The create is withheld, and why. This is the participant in a
-             swap the Bitcoin side initiated: their ZNN answers a payment that
-             is not yet real, and locking it against one the sender can still
-             replace hands them the ZNN for nothing. Said here because the
-             button that would have produced the engine's refusal is not
-             shown. -->
-        <Note
-          v-if="swap.zenonHtlcIsOurs && !swap.zenon?.htlcId && live && swap.fundingCommitBlocker"
-          variant="warn"
-          summary="Not locking ZNN yet: their Bitcoin funding is not settled"
-        >
-          <p>
-            {{
-              swap.fundingCommitBlocker.charAt(0).toUpperCase() +
-              swap.fundingCommitBlocker.slice(1)
-            }}. Your Zenon HTLC answers that payment, so it waits until the payment is mined and
-            covers the agreed amount. A payment still in a mempool is one its sender can replace
-            &mdash; and they already hold the secret that would open your HTLC.
-          </p>
-          <p class="mt-2">
-            Refresh keeps checking, and the create appears here &mdash; and runs by itself under
-            Auto Mode &mdash; once it is settled. The same applies if you create the HTLC with
-            znn-cli instead: do not run that command before this notice clears.
-          </p>
-        </Note>
         <ZenonWallet
           v-if="zenonReclaimable"
           :swap="swap"

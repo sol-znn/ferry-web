@@ -212,20 +212,22 @@ async function sign() {
       )
     }
 
-    // For a create that answers the counterparty's Bitcoin funding, the chain
-    // is asked one more time, now: the block was built against a funding that
-    // was confirmed at prepare time, and a person may have spent minutes
-    // reading the summary. The engine re-read the chain when it built the
-    // block; this re-reads it before the block leaves the page. Refresh is the
-    // same call the card's timer makes, so the swap it returns is the one the
-    // card would show next.
+    // For a create that answers the counterparty's Bitcoin funding, the gate
+    // runs one more time, now. The engine re-read the chain when it BUILT the
+    // block; a person may have spent minutes reading the summary since, and a
+    // funding that was mined then can have been spent or reorganised out. This
+    // is the same fail-closed check as at plan time -- exact outpoint, full
+    // value, mined, deep enough, and a chain that cannot be read is a refusal
+    // -- not a Refresh, which keeps what it last knew when a read fails.
     if (props.action === 'create' && props.swap.btcLegIsInitiators) {
-      const fresh = await api.refresh(props.swap.id, settings.value)
-      if (!fresh.fundingCommitted) {
+      try {
+        await api.fundingCheck(props.swap.id, settings.value)
+      } catch (err) {
         plan.value = null
+        const why = err instanceof Error ? err.message : String(err)
         throw new Error(
-          `Not sent: ${fresh.fundingCommitBlocker}. The block has been discarded; it is ` +
-            `rebuilt when their funding is settled again.`,
+          `Not sent: ${why} The block has been discarded; it is rebuilt when their funding ` +
+            `is settled again.`,
         )
       }
     }

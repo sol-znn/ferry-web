@@ -151,6 +151,30 @@ a refusal rather than a pass. After publishing, the block the wallet actually
 signed is compared field by field against the one this page proposed. See
 [EXTENSION-WALLET.md](EXTENSION-WALLET.md).
 
+### 6. ZNN is locked against one confirmation
+
+When Bitcoin initiates, the participant's Zenon HTLC answers the initiator's
+Bitcoin payment, and the initiator already holds the secret that opens it. A
+payment still in the mempool can be replaced by its sender for a slightly
+higher fee -- so locking ZNN against one lets them take the ZNN and keep the
+BTC. Ferry therefore refuses to build the create, withholds the button and the
+printed `znn-cli` command, and keeps Auto Mode waiting, until the funding is
+present at the contract, covers the agreed amount, is mined at least
+`commitConfirmations` deep (`wasm/swap.go`, currently **one** block), and is
+still unspent -- all re-read from the chain both when the block is built and
+again immediately before it is handed to the wallet. A chain that cannot be
+read is a refusal. The Zenon-initiated ordering is exempt: that leg goes first
+by design.
+
+One block is the threshold at which replacement stops being free: undoing a
+mined payment means mining a competing block. It is not finality. A reorg one
+block deep happens on Bitcoin from time to time, and for a swap whose value
+would make somebody mine for it, one confirmation is the wrong number. The
+constant is a single place to raise it for every swap; for an individual
+high-value trade, wait for the depth you would want from any payment of that
+size before pressing Create -- the card counts to six -- rather than letting
+Auto Mode act at one.
+
 ---
 
 ## Trusting the deployment

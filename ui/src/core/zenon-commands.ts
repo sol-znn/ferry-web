@@ -86,7 +86,18 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
       `# This is the ${ours} leg, so it must expire ` +
         `${sw.btcLegIsInitiators ? 'BEFORE' : 'AFTER'} the Bitcoin contract.`,
     )
-    if (hours && hours > ZNN_CLI_MAX_HOURS) {
+    if (!sw.fundingCommitted) {
+      // The same gate the wallet button is behind, applied to the one path the
+      // engine cannot stop: a command run in a terminal. Printed as a comment
+      // rather than a command, because a command that is nearly right is a
+      // command somebody runs without reading -- and this one, run now, hands
+      // the counterparty the ZNN for a payment they can still take back.
+      lines.push(`# NOT YET: ${sw.fundingCommitBlocker || 'their Bitcoin funding is not settled'}.`)
+      lines.push('# Your HTLC answers their Bitcoin payment. A payment they can still replace is')
+      lines.push('# one they can take back after you lock ZNN, and they already hold the secret.')
+      lines.push('# The create command is withheld until the card says the funding is confirmed')
+      lines.push('# and covers the agreed amount; Refresh keeps checking.')
+    } else if (hours && hours > ZNN_CLI_MAX_HOURS) {
       lines.push(
         `# znn-cli cannot express this leg: it caps htlc.create at ${ZNN_CLI_MAX_HOURS}h and this` +
           ` needs ${hours}h. Use the Syrius extension, which has no cap.`,
@@ -96,10 +107,10 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
         `znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1` +
           ` ${sw.secretHashHex}${cliFlags}`,
       )
+      lines.push('')
+      lines.push('# It will print an id. Paste that into "Zenon HTLC id" above and verify it —')
+      lines.push('# verifying your own HTLC is how you catch a typo before they act on it.')
     }
-    lines.push('')
-    lines.push('# It will print an id. Paste that into "Zenon HTLC id" above and verify it —')
-    lines.push('# verifying your own HTLC is how you catch a typo before they act on it.')
     lines.push('')
     if (sw.secretArrivesOnZenon) {
       lines.push('# When they unlock it, the preimage becomes visible on Zenon. Unlocking DELETES')

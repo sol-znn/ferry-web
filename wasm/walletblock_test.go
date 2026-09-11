@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -220,7 +221,74 @@ func TestCounterLegFundingGate(t *testing.T) {
 		if err := checkFundingOnChain(context.Background(), fresh, sw, 1); err != nil {
 			t.Errorf("a one-deep funding failed a one-deep rule: %v", err)
 		}
+		// The output is there and mined, but the tip cannot be read, so the
+		// depth cannot be counted. Not counted is not enough.
+		noTip := tipFails{fresh}
+		if err := checkFundingOnChain(context.Background(), noTip, sw, 1); err == nil ||
+			!strings.Contains(err.Error(), "chain tip") {
+			t.Errorf("an unreadable tip did not refuse: %v", err)
+		}
 	})
+}
+
+// tipFails is a working backend whose tip cannot be read.
+type tipFails struct{ *stubBackend }
+
+func (tipFails) TipHeight(context.Context) (int64, error) { return 0, errors.New("tip unreadable") }
+
+// The sign-time gate, through the call table the page uses: the same refusal
+// planCreate makes, available on its own so it can run right before a block
+// is handed over. Both answers here come without a chain -- one shape never
+// asks, the other is refused on the record first.
+func TestFundingCheckThroughTheAPI(t *testing.T) {
+	a := &API{Store: NewStore(NewMemStorage())}
+	settings := `"settings":{"network":"regtest","btcEsplora":"http://127.0.0.1:1"}`
+	save := func(sw *Swap) {
+		t.Helper()
+		if err := a.Store.Save(sw); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	// The Zenon-initiated ordering: this side's HTLC goes first, and there is
+	// no Bitcoin to wait for.
+	first := &Swap{ID: "aabbccddeeff0055", Network: "regtest", Role: RoleInitiator, Leg: LegReceive,
+		State: StateDraft, Key: mustKey(t), AmountSats: 400_000}
+	save(first)
+	var okResp struct {
+		OK    bool   `json:"ok"`
+		Waits bool   `json:"waits"`
+		Error string `json:"error"`
+	}
+	raw := a.Call("fundingCheck", []byte(`{"id":"`+first.ID+`",`+settings+`}`))
+	if err := json.Unmarshal(raw, &okResp); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if !okResp.OK || okResp.Waits || okResp.Error != "" {
+		t.Errorf("the Zenon-initiated shape did not pass cleanly: %s", raw)
+	}
+
+	// The Bitcoin-initiated participant with nothing funded: refused, and
+	// refused before any chain is consulted (the Esplora above is a dead port).
+	waiting := &Swap{ID: "aabbccddeeff0066", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateAwaitingFunding, Key: mustKey(t), AmountSats: 400_000}
+	save(waiting)
+	raw = a.Call("fundingCheck", []byte(`{"id":"`+waiting.ID+`",`+settings+`}`))
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &refusal); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if !strings.Contains(refusal.Error, "not locking ZNN yet") ||
+		!strings.Contains(refusal.Error, "not been seen") {
+		t.Errorf("the waiting shape was not refused on the record: %s", raw)
+	}
+
+	// A stray field is refused like everywhere else on this boundary.
+	raw = a.Call("fundingCheck", []byte(`{"id":"`+first.ID+`","force":true,`+settings+`}`))
+	if !strings.Contains(string(raw), "error") {
+		t.Errorf("an unknown field was accepted: %s", raw)
+	}
 }
 
 // failingBackend answers every question with an error, for the checks that
