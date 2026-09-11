@@ -111,6 +111,11 @@ type swapView struct {
 	SecretArrivesOnZenon bool `json:"secretArrivesOnZenon"`
 	// FundingShort flags a contract funded for less than was agreed.
 	FundingShort bool `json:"fundingShort,omitempty"`
+	// RedeemHeldForShortFunding says the redeem is withheld: the contract is
+	// short AND this side's redeem would be the first publication of its
+	// secret. Derived in Go so the card's missing button and Redeem's refusal
+	// are one rule rather than two.
+	RedeemHeldForShortFunding bool `json:"redeemHeldForShortFunding,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -161,14 +166,15 @@ func view(sw *Swap) *swapView {
 		// first. That is the initiator, and they spend the leg they do NOT own:
 		// so this user learns it on Zenon exactly when the counterparty is the
 		// initiator and this user created the Zenon HTLC.
-		SecretArrivesOnZenon: sw.SecretArrivesOnZenon(),
-		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
-		Funding:              sw.Funding,
-		FundingBroadcast:     sw.FundingBroadcast,
-		RefundTx:             sw.RefundTx,
-		RedeemTx:             sw.RedeemTx,
-		Zenon:                sw.Zenon,
-		Events:               sw.Events,
+		SecretArrivesOnZenon:      sw.SecretArrivesOnZenon(),
+		FundingShort:              sw.FundingShort(),
+		RedeemHeldForShortFunding: sw.RedeemHeldForShortFunding(),
+		Funding:                   sw.Funding,
+		FundingBroadcast:          sw.FundingBroadcast,
+		RefundTx:                  sw.RefundTx,
+		RedeemTx:                  sw.RedeemTx,
+		Zenon:                     sw.Zenon,
+		Events:                    sw.Events,
 	}
 	if len(sw.Contract) > 0 {
 		v.ContractHex = hex.EncodeToString(sw.Contract)

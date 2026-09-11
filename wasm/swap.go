@@ -360,6 +360,34 @@ func (s *Swap) SecretArrivesOnZenon() bool {
 	return s.ZenonHtlcIsOurs() && s.Role == RoleParticipant
 }
 
+// RedeemRevealsSecret reports whether this side's Bitcoin redeem would be the
+// FIRST publication of the secret. That is the initiator on the receiving leg:
+// the secret was generated here and has been nowhere else, and the redeem puts
+// it in a witness on a public chain -- which is exactly what lets the
+// counterparty unlock the Zenon HTLC this user locked for them.
+//
+// The participant on the same leg is the opposite case. Their secret came off
+// the counterparty's Zenon unlock, so it is already public and their redeem
+// gives nothing further away.
+func (s *Swap) RedeemRevealsSecret() bool {
+	return s.Leg == LegReceive && s.Role == RoleInitiator
+}
+
+// FundingShort reports that the contract holds less than was agreed.
+func (s *Swap) FundingShort() bool {
+	return s.Funding != nil && s.Funding.Value < s.AmountSats
+}
+
+// RedeemHeldForShortFunding is the one rule behind both the missing button and
+// the refusal in Manager.Redeem: a short contract must not be redeemed while
+// the redeem is what would publish the secret. Redeeming it trades the full
+// Zenon amount, which the counterparty can then unlock, for a partial Bitcoin
+// payment whose size the counterparty chose. Auto Mode reaches the same line
+// and stops there.
+func (s *Swap) RedeemHeldForShortFunding() bool {
+	return s.FundingShort() && s.RedeemRevealsSecret()
+}
+
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of
 // ZenonLegIsInitiators: exactly one leg of a swap is the initiator's.

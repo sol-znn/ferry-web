@@ -324,12 +324,17 @@ const fundingDepth = computed(() => {
     variant: (n >= 3 ? 'success' : 'pending') as BadgeVariants['variant'],
   }
 })
+// A redeem publishes the secret. Where that secret is this side's own and the
+// contract holds less than was agreed, the engine refuses to build one, so the
+// button is not offered either -- the rule is Go's, and this only reads it.
+// Auto Mode goes through this same gate.
 const canRedeem = computed(
   () =>
     props.swap.leg === 'receive' &&
     Boolean(props.swap.funding) &&
     Boolean(props.swap.secretHex) &&
-    props.swap.state !== 'redeemed',
+    props.swap.state !== 'redeemed' &&
+    !props.swap.redeemHeldForShortFunding,
 )
 // Only one shape needs the preimage typed in: the participant who created the
 // Zenon HTLC. The initiator unlocking it publishes the preimage on Zenon, and
@@ -721,6 +726,12 @@ const autoMayFund = computed(
  * that opens the Zenon leg. One block makes that expensive rather than free. The
  * button beside it stays live and unconditional -- somebody watching a specific
  * swap may have a reason to accept that risk.
+ *
+ * The amount is not left to judgement the same way. A confirmed payment that is
+ * SHORT of what was agreed is not a redeem waiting to happen: revealing the
+ * initiator's secret against it hands the counterparty the full Zenon leg for a
+ * payment they chose the size of. That gate is canRedeem's, so it holds here
+ * and on the button alike, and the engine refuses even if neither did.
  *
  * Refunding is deliberately absent -- see the note in useAutoMode.
  */
@@ -1475,6 +1486,29 @@ async function downloadRecovery() {
         :error="unlockError"
         :unlocked-by="unlockedBy"
       />
+
+      <!-- The redeem is withheld, and why. Said on the card rather than left to
+           the engine's error, because the button that would have produced that
+           error is not shown -- a swap that looks funded and redeemable with no
+           way to redeem it needs a sentence. -->
+      <Note
+        v-if="swap.redeemHeldForShortFunding"
+        variant="warn"
+        summary="Redeem withheld: the contract is short of the agreed amount"
+      >
+        <p>
+          The contract holds {{ sats(swap.funding?.value ?? 0) }} against the
+          {{ sats(swap.amountSats) }} agreed. Redeeming it would publish your secret, and that is
+          what lets the counterparty unlock the ZNN you lock for them &mdash; in full, against a
+          payment they chose to leave short.
+        </p>
+        <p class="mt-2">
+          Wait for the full amount; Refresh keeps looking for an output that covers it. Do not
+          create your Zenon HTLC against this funding. If you decide to take the partial payment
+          anyway, do it only once your Zenon HTLC has expired and been reclaimed, or was never
+          created: the Recover page builds that redeem from this swap's recovery file.
+        </p>
+      </Note>
 
       <!-- Actions, loudest first: the one thing this swap can do now, then the
            ones that are always available. -->

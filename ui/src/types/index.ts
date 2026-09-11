@@ -140,6 +140,11 @@ export interface Swap {
   secretArrivesOnZenon: boolean
   /** A contract funded for less than was agreed. */
   fundingShort?: boolean
+  /** The redeem is withheld: the contract is short AND this side's redeem
+   *  would be the first publication of its secret, which is what opens the
+   *  Zenon leg for the counterparty. Computed in Go (Swap.RedeemHeldForShortFunding)
+   *  so the missing button and the engine's refusal are one rule. */
+  redeemHeldForShortFunding?: boolean
 
   funding?: FundingOutput
   refundTx?: SpendResult

@@ -948,6 +948,28 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	if len(sw.Secret) == 0 {
 		return nil, errors.New("the secret is not known yet, so this contract cannot be redeemed")
 	}
+	// A redeem publishes the secret. When the secret is this side's own -- the
+	// initiator's, generated here and so far nowhere else -- publishing it is
+	// what lets the counterparty open the Zenon HTLC this user locked for them.
+	// Against a contract holding less than was agreed, that is the full ZNN
+	// exchanged for a partial payment of BTC whose size the counterparty chose.
+	// So it is refused here, whoever asked: the card withholds the button on the
+	// same rule, and Auto Mode goes no further. Refresh keeps looking for an
+	// output that covers the amount, so a top-up is picked up on its own.
+	//
+	// The participant's redeem is the opposite case and is not held: their
+	// secret came off the counterparty's Zenon unlock and is public already, so
+	// taking whatever the contract holds costs nothing further.
+	if sw.RedeemHeldForShortFunding() {
+		return nil, fmt.Errorf("the contract holds %d sat but %d sat was agreed, and redeeming "+
+			"it would publish your secret -- which is what lets the counterparty unlock the "+
+			"ZNN you lock for them, in full, against a payment they chose to leave short. "+
+			"Wait for the full amount (Refresh keeps looking for it) and do not create your "+
+			"Zenon HTLC against this funding. If you decide to take the partial payment "+
+			"anyway, do it only once your Zenon HTLC has expired and been reclaimed, or was "+
+			"never created: the Recover page builds that redeem from this swap's recovery file",
+			sw.Funding.Value, sw.AmountSats)
+	}
 	destAddr, err = payoutAddress(sw, destAddr)
 	if err != nil {
 		return nil, err

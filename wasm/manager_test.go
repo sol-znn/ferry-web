@@ -844,3 +844,85 @@ func TestPayoutAddressCannotBeRedirected(t *testing.T) {
 		t.Error("a record with no address and none supplied should be refused")
 	}
 }
+
+// A redeem publishes the secret, and the initiator's secret has been nowhere
+// else. Against a contract holding less than was agreed, that hands the
+// counterparty the full Zenon leg for a Bitcoin payment they chose to leave
+// short -- so it is refused, and refused in the engine, where Auto Mode and the
+// button both end up. The participant's secret is already public, so their
+// redeem of the same short contract is simply collecting what is there.
+func TestRedeemWillNotRevealTheSecretForAShortFunding(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refundKey, redeemKey := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, err := BuildContract(refundKey.PKH, redeemKey.PKH, lock, hash)
+	if err != nil {
+		t.Fatalf("BuildContract: %v", err)
+	}
+	addr, err := ContractAddress(contract, params)
+	if err != nil {
+		t.Fatalf("ContractAddress: %v", err)
+	}
+	const txid = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	receiving := func(id string, role Role, value int64) *Swap {
+		return &Swap{
+			ID: id, Network: "regtest", Role: role, Leg: LegReceive, State: StateFunded,
+			Key: redeemKey, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+			Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest,
+			LockTime: lock,
+			Funding:  &FundingOutput{TxID: txid, Vout: 0, Value: value, Confirmed: true},
+		}
+	}
+	m := newManager(t, &stubBackend{feeRate: 2})
+	save := func(sw *Swap) {
+		t.Helper()
+		if err := m.Store.Save(sw); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	// The initiator, short: refused, and the refusal leaves the swap as it was.
+	short := receiving("aabbccddeeff0011", RoleInitiator, 100_000)
+	save(short)
+	if !view(short).RedeemHeldForShortFunding {
+		t.Error("the card is not told the redeem is withheld")
+	}
+	if _, err := m.Redeem(context.Background(), short.ID, ""); err == nil {
+		t.Fatal("a short contract was redeemed with the initiator's secret")
+	} else if !strings.Contains(err.Error(), "publish your secret") {
+		t.Errorf("the refusal does not say what it is protecting: %v", err)
+	}
+	got, err := m.Store.Load(short.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.State != StateFunded || got.RedeemTx != nil {
+		t.Errorf("the refusal changed the swap: state %q, redeemTx %v", got.State, got.RedeemTx)
+	}
+
+	// The initiator, paid in full: nothing to hold.
+	full := receiving("aabbccddeeff0022", RoleInitiator, 400_000)
+	save(full)
+	if view(full).RedeemHeldForShortFunding {
+		t.Error("a fully funded contract reads as withheld")
+	}
+	if got, err := m.Redeem(context.Background(), full.ID, ""); err != nil {
+		t.Errorf("a fully funded contract could not be redeemed: %v", err)
+	} else if got.State != StateRedeemed {
+		t.Errorf("state after redeem is %q, want %q", got.State, StateRedeemed)
+	}
+
+	// The participant, short: their secret came off the counterparty's Zenon
+	// unlock and is public. Whatever the contract holds is theirs to take.
+	part := receiving("aabbccddeeff0033", RoleParticipant, 100_000)
+	save(part)
+	if view(part).RedeemHeldForShortFunding {
+		t.Error("the participant's redeem of a short contract reads as withheld")
+	}
+	if got, err := m.Redeem(context.Background(), part.ID, ""); err != nil {
+		t.Errorf("the participant could not collect a short contract: %v", err)
+	} else if got.State != StateRedeemed {
+		t.Errorf("state after redeem is %q, want %q", got.State, StateRedeemed)
+	}
+}
