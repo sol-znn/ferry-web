@@ -345,11 +345,49 @@ const needsSecret = computed(
 )
 const canRefund = computed(() => props.swap.refundable && props.swap.state !== 'refunded')
 
+/**
+ * Whether the printed create command may be printed, decided against the chain
+ * now rather than off the swap record.
+ *
+ * This is the participant in a Bitcoin-initiated swap, whose ZNN answers the
+ * initiator's payment. The wallet button is behind Go's gate twice over -- when
+ * the block is built and again before it is handed over -- but a command copied
+ * into a terminal passes through no gate at all, so the text is the gate: the
+ * command appears only while a fail-closed check of the funding (present, full,
+ * mined, unspent, chain readable) has passed, and it is asked again every time
+ * the swap or the setting changes, which includes every refresh tick. Off by
+ * default, which is what keeps a stale record from printing a live command.
+ */
+const cliCreateWaitsOnBtc = computed(
+  () => props.swap.zenonHtlcIsOurs && props.swap.btcLegIsInitiators && !props.swap.zenon?.htlcId,
+)
+const cliCreate = ref<{allowed: boolean; blocker: string}>({allowed: false, blocker: ''})
+watch(
+  [() => props.swap, showCli, () => settings.value.btcEsplora, () => settings.value.network],
+  async () => {
+    if (!showCli.value || !cliCreateWaitsOnBtc.value) {
+      cliCreate.value = {allowed: false, blocker: ''}
+      return
+    }
+    try {
+      await api.fundingCheck(props.swap.id, settings.value)
+      cliCreate.value = {allowed: true, blocker: ''}
+    } catch (err) {
+      cliCreate.value = {allowed: false, blocker: err instanceof Error ? err.message : String(err)}
+    }
+  },
+  {immediate: true},
+)
+
 // The commands are recomputed rather than called twice in the template: the
 // <pre> and the copy button have to hand over the same text, and calling the
 // builder in two places is how they end up one render apart.
 const commands = computed(() =>
-  znnCommands(props.swap, {nodeURL: cliNodeURL(settings.value.znnUrl)}),
+  znnCommands(props.swap, {
+    nodeURL: cliNodeURL(settings.value.znnUrl),
+    createAllowed: cliCreate.value.allowed,
+    createBlocker: cliCreate.value.blocker,
+  }),
 )
 
 /**

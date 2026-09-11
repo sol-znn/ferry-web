@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zenon/ferry-web/wasm/chain"
 )
@@ -145,13 +149,34 @@ func TestCounterLegFundingGate(t *testing.T) {
 			{"short", waits(&FundingOutput{TxID: txid, Value: 100_000, Confirmed: true, Confirmations: 3}), "400000 sat was agreed"},
 			{"mined and full", waits(&FundingOutput{TxID: txid, Value: 400_000, Confirmed: true, Confirmations: 1}), ""},
 		}
-		spent := waits(&FundingOutput{TxID: txid, Value: 400_000, Confirmed: true, Confirmations: 6})
-		spent.State = StateRefunded
-		cases = append(cases, struct {
+		type c = struct {
 			name string
 			sw   *Swap
 			want string
-		}{"spent", spent, "already been spent"})
+		}
+		full := func() *FundingOutput {
+			return &FundingOutput{TxID: txid, Value: 400_000, Confirmed: true, Confirmations: 6}
+		}
+		spent := waits(full())
+		spent.State = StateRefunded
+		// Confirmed, full, and still sitting there -- but the timelock has
+		// passed, so it is the counterparty's to take back the moment ZNN is
+		// locked against it.
+		expired := waits(full())
+		expired.State = StateExpired
+		expired.LockTime = time.Now().Add(-time.Hour).Unix()
+		// Not expired yet, but too close: a Zenon leg has to expire before the
+		// Bitcoin contract by MinLegGap and still live MinLegRemaining.
+		tooClose := waits(full())
+		tooClose.LockTime = time.Now().Add(MinLegGap + MinLegRemaining - time.Minute).Unix()
+		roomy := waits(full())
+		roomy.LockTime = time.Now().Add(MinLegGap + MinLegRemaining + time.Hour).Unix()
+		cases = append(cases,
+			c{"spent", spent, "already been spent"},
+			c{"expired", expired, "timelock has passed"},
+			c{"locktime too close", tooClose, "too close"},
+			c{"locktime with room", roomy, ""},
+		)
 		for _, c := range cases {
 			got := c.sw.FundingCommitBlocker()
 			if c.want == "" && got != "" {
@@ -282,6 +307,50 @@ func TestFundingCheckThroughTheAPI(t *testing.T) {
 	if !strings.Contains(refusal.Error, "not locking ZNN yet") ||
 		!strings.Contains(refusal.Error, "not been seen") {
 		t.Errorf("the waiting shape was not refused on the record: %s", raw)
+	}
+
+	// The waiting shape with funding that IS settled: the record passes, and
+	// the chain is asked. Served by a stub Esplora, so this exercises the real
+	// client, the real URL building, and the real JSON -- the whole path the
+	// page's sign-time call takes -- rather than the helper on its own.
+	esplora := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/utxo"):
+			fmt.Fprintf(w, `[{"txid":%q,"vout":0,"value":400000,"status":{"confirmed":true,"block_height":100}}]`,
+				"5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a")
+		case r.URL.Path == "/blocks/tip/height":
+			fmt.Fprint(w, "100")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer esplora.Close()
+	settled := &Swap{ID: "aabbccddeeff0077", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateFunded, Key: mustKey(t), AmountSats: 400_000, ContractAddr: "bcrt1qcontract",
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Funding: &FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a",
+			Value: 400_000, Confirmed: true, Confirmations: 1}}
+	save(settled)
+	live := `"settings":{"network":"regtest","btcEsplora":"` + esplora.URL + `"}`
+	raw = a.Call("fundingCheck", []byte(`{"id":"`+settled.ID+`",`+live+`}`))
+	if err := json.Unmarshal(raw, &okResp); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if !okResp.OK || !okResp.Waits || okResp.Error != "" {
+		t.Errorf("settled funding did not pass the live check: %s", raw)
+	}
+	// The same swap, but the chain now says the output is gone.
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/utxo") {
+			fmt.Fprint(w, "[]")
+			return
+		}
+		fmt.Fprint(w, "100")
+	}))
+	defer gone.Close()
+	raw = a.Call("fundingCheck", []byte(`{"id":"`+settled.ID+`","settings":{"network":"regtest","btcEsplora":"`+gone.URL+`"}}`))
+	if !strings.Contains(string(raw), "no longer unspent") {
+		t.Errorf("a vanished output passed the live check: %s", raw)
 	}
 
 	// A stray field is refused like everywhere else on this boundary.

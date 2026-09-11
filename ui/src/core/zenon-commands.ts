@@ -43,6 +43,17 @@ export function cliNodeURL(appURL: string | undefined): string {
 export interface CommandContext {
   /** The Zenon node this browser is set to, translated to znn-cli's transport. */
   nodeURL?: string
+  /**
+   * For a create that answers the counterparty's Bitcoin funding: whether a
+   * fail-closed check of that funding against the chain passed JUST NOW. Not
+   * the swap's cached `fundingCommitted`, which is only as current as the last
+   * refresh and survives a refresh that could not read the chain. Absent means
+   * not checked, and not checked means withheld -- the command is the one path
+   * the engine cannot gate, so the text has to be.
+   */
+  createAllowed?: boolean
+  /** Why it is not allowed, when the check refused; shown in the command's place. */
+  createBlocker?: string
 }
 
 /**
@@ -86,13 +97,24 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
       `# This is the ${ours} leg, so it must expire ` +
         `${sw.btcLegIsInitiators ? 'BEFORE' : 'AFTER'} the Bitcoin contract.`,
     )
-    if (!sw.fundingCommitted) {
-      // The same gate the wallet button is behind, applied to the one path the
-      // engine cannot stop: a command run in a terminal. Printed as a comment
-      // rather than a command, because a command that is nearly right is a
-      // command somebody runs without reading -- and this one, run now, hands
-      // the counterparty the ZNN for a payment they can still take back.
-      lines.push(`# NOT YET: ${sw.fundingCommitBlocker || 'their Bitcoin funding is not settled'}.`)
+    // The same gate the wallet button is behind, applied to the one path the
+    // engine cannot stop: a command run in a terminal. Where this leg answers
+    // the counterparty's Bitcoin funding, the command is printed only when the
+    // caller says a live, fail-closed check of that funding passed just now;
+    // the swap's own cached flag is not consulted, because it is only as
+    // current as the last refresh. Printed as a comment rather than a command,
+    // because a command that is nearly right is a command somebody runs
+    // without reading -- and this one, run now, hands the counterparty the ZNN
+    // for a payment they can still take back.
+    const waitsOnBtc = sw.btcLegIsInitiators
+    if (waitsOnBtc && ctx.createAllowed !== true) {
+      lines.push(
+        `# NOT YET: ${
+          ctx.createBlocker ||
+          sw.fundingCommitBlocker ||
+          'their Bitcoin funding has not been checked against the chain just now'
+        }.`,
+      )
       lines.push('# Your HTLC answers their Bitcoin payment. A payment they can still replace is')
       lines.push('# one they can take back after you lock ZNN, and they already hold the secret.')
       lines.push('# The create command is withheld until the card says the funding is confirmed')

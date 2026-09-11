@@ -122,15 +122,6 @@ export const api = {
     }),
 
   /**
-   * Record what the wallet published, and check it.
-   *
-   * A create is fed straight back through the ordinary verification path: the
-   * hash the wallet reports is the HTLC id, and an unchecked id is exactly as
-   * untrustworthy whether it came from a counterparty or from one's own wallet.
-   * It will usually not be on the chain yet, which comes back as pending rather
-   * than as a failure.
-   */
-  /**
    * The sign-time gate for a create that answers the counterparty's Bitcoin
    * funding: the same fail-closed check planCreate runs, on its own, for the
    * moment before a built block is handed to the wallet. Throws with the
@@ -140,6 +131,15 @@ export const api = {
   fundingCheck: (id: string, settings: Settings) =>
     wasmCall<{ok: true; waits: boolean}>('fundingCheck', {id, settings}),
 
+  /**
+   * Record what the wallet published, and check it.
+   *
+   * A create is fed straight back through the ordinary verification path: the
+   * hash the wallet reports is the HTLC id, and an unchecked id is exactly as
+   * untrustworthy whether it came from a counterparty or from one's own wallet.
+   * It will usually not be on the chain yet, which comes back as pending rather
+   * than as a failure.
+   */
   walletSent: (
     id: string,
     action: WalletAction,

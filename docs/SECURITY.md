@@ -161,10 +161,14 @@ BTC. Ferry therefore refuses to build the create, withholds the button and the
 printed `znn-cli` command, and keeps Auto Mode waiting, until the funding is
 present at the contract, covers the agreed amount, is mined at least
 `commitConfirmations` deep (`wasm/swap.go`, currently **one** block), and is
-still unspent -- all re-read from the chain both when the block is built and
-again immediately before it is handed to the wallet. A chain that cannot be
-read is a refusal. The Zenon-initiated ordering is exempt: that leg goes first
-by design.
+still unspent, with the Bitcoin locktime not yet passed and far enough away to
+fit a Zenon leg before it -- all re-read from the chain both when the block is
+built and again immediately before it is handed to the wallet. A chain that
+cannot be read is a refusal. The printed `znn-cli` command, which no engine can
+gate once it is in a terminal, is printed only while that same live check
+passes, and is asked again on every refresh; the swap's own remembered state is
+never enough to print it. The Zenon-initiated ordering is exempt: that leg goes
+first by design.
 
 One block is the threshold at which replacement stops being free: undoing a
 mined payment means mining a competing block. It is not finality. A reorg one

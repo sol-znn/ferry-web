@@ -397,6 +397,16 @@ func (s *Swap) FundingCommitBlocker() string {
 		return "their Bitcoin funding has not been seen at the contract yet"
 	case s.State == StateRedeemed || s.State == StateRefunded:
 		return "the contract output has already been spent"
+	case s.State == StateExpired:
+		return "the Bitcoin contract's timelock has passed, so their funding is theirs to take back"
+	case s.LockTime > 0 && s.LockTime-time.Now().Unix() < int64((MinLegGap+MinLegRemaining)/time.Second):
+		// A Zenon leg created now would have to expire before the Bitcoin
+		// contract by MinLegGap and still live MinLegRemaining, and there is no
+		// longer room for both. planCreate refuses this against the chain's
+		// clock; the record refuses it against the browser's, which is enough
+		// to withhold a button and a command.
+		return fmt.Sprintf("the Bitcoin locktime is %s away, too close to fit a Zenon leg that "+
+			"expires before it", time.Duration(s.LockTime-time.Now().Unix())*time.Second)
 	case f.Value < s.AmountSats:
 		return fmt.Sprintf("the contract holds %d sat but %d sat was agreed", f.Value, s.AmountSats)
 	case !f.Confirmed:
