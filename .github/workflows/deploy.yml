@@ -99,8 +99,9 @@ jobs:
         run: npm run wallet:provider
 
       # The printed znn-cli commands, against the one gate the engine cannot
-      # enforce on a terminal: no create command until the Bitcoin funding it
-      # answers is settled.
+      # enforce on a terminal: no create command is ever printed for the leg
+      # that answers the counterparty's Bitcoin funding, and no text from
+      # outside the page can escape a comment in the copied block.
       - name: Printed command checks
         working-directory: ui
         run: npm run commands

@@ -255,6 +255,11 @@ func (m *Manager) Create(p CreateParams) (*Swap, error) {
 		return nil, err
 	}
 
+	zenonAmount := strings.TrimSpace(p.ZenonAmount)
+	if err := canonicalZenonAmount(zenonAmount); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	sw := &Swap{
 		ID:         id,
@@ -271,7 +276,7 @@ func (m *Manager) Create(p CreateParams) (*Swap, error) {
 			SelfAddress:   zenonSelf,
 			PeerAddress:   zenonPeer,
 			TokenStandard: zenonToken,
-			AmountDisplay: strings.TrimSpace(p.ZenonAmount),
+			AmountDisplay: zenonAmount,
 			HashType:      znn.HashTypeSHA256,
 			KeyMaxSize:    SecretSize,
 		},

@@ -1279,7 +1279,9 @@ async function downloadRecovery() {
               With the Syrius browser extension that is a button: the block goes to the extension,
               which shows it to you, signs it with its own key, mines its own plasma and publishes
               through its own node. Without it, the same operation is the printed
-              <code>znn-cli</code> command.
+              <code>znn-cli</code> command &mdash; except for a create that answers the
+              counterparty's Bitcoin funding, which is never printed as a command: a terminal runs
+              no check, and that check is the whole point. The terms are printed instead.
             </p>
           </InfoTip>
           <span class="flex-1" />

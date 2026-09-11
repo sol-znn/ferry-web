@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -611,7 +612,28 @@ func DecodeOffer(s string) (*Offer, error) {
 	if o.AmountSats <= 0 {
 		return nil, fmt.Errorf("offer's amountSats is %d, which is not an amount", o.AmountSats)
 	}
+	if err := canonicalZenonAmount(o.ZenonAmt); err != nil {
+		return nil, fmt.Errorf("offer's %w", err)
+	}
 	return &o, nil
+}
+
+// zenonAmountShape is what a Zenon amount may look like: digits, optionally a
+// point and more digits. Nothing else -- not a sign, not an exponent, not a
+// thousands separator, and above all nothing that is not a character of a
+// number. The amount is a term of the trade that reaches a printed command,
+// and a control character inside it is how a stranger's offer becomes a line
+// in somebody's terminal.
+var zenonAmountShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// canonicalZenonAmount accepts an absent amount or a plain decimal, and
+// nothing else. Checked where amounts come in -- a form, an offer -- rather
+// than where they go out, so every later use can trust the shape.
+func canonicalZenonAmount(s string) error {
+	if s == "" || zenonAmountShape.MatchString(s) {
+		return nil
+	}
+	return fmt.Errorf("the Zenon amount %q is not a plain decimal like 10 or 1.25", s)
 }
 
 // Opposite returns the leg the receiver of an offer should take.

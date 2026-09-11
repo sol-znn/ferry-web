@@ -170,23 +170,43 @@ ok(
 );
 
 section("text from outside cannot become a command when the block is pasted");
-for (const [name, evil] of [
-  ["a newline", "backend failed\nprintf PWNED"],
-  ["a carriage return", "backend failed\rprintf PWNED"],
-  ["CRLF", "backend failed\r\nprintf PWNED"],
+// Every term that reaches the block from outside this page -- the offer, the
+// counterparty, the chain, an error body -- with every line separator a shell
+// would honour. The only executable line left standing must be the reclaim.
+const seps = [
+  ["a newline", "\n"],
+  ["a carriage return", "\r"],
+  ["CRLF", "\r\n"],
+];
+const poisoned = (field, sep) => {
+  const evil = `backend failed${sep}printf PWNED`;
+  const sw = { ...base, fundingCommitted: false, zenon: { ...base.zenon } };
+  if (field === "fundingCommitBlocker") sw.fundingCommitBlocker = evil;
+  else if (field === "secretHashHex") sw.secretHashHex = evil;
+  else sw.zenon[field] = evil;
+  return sw;
+};
+for (const field of [
+  "amountDisplay",
+  "peerAddress",
+  "tokenStandard",
+  "secretHashHex",
+  "fundingCommitBlocker",
 ]) {
-  const sw = { ...base, fundingCommitted: false, fundingCommitBlocker: evil };
-  const text = znnCommands(sw);
-  const bare = commands(sw);
-  ok(
-    `${name} in the reason leaves no uncommented line but the reclaim`,
-    bare.length === 1 && bare[0].startsWith("znn-cli htlc.reclaim "),
-    JSON.stringify(bare),
-  );
-  ok(
-    `${name}: the injected text is still visible, as a comment`,
-    text.includes("# printf PWNED"),
-  );
+  for (const [name, sep] of seps) {
+    const sw = poisoned(field, sep);
+    const text = znnCommands(sw);
+    const bare = commands(sw);
+    ok(
+      `${field} with ${name}: no uncommented line but the reclaim`,
+      bare.length === 1 && bare[0].startsWith("znn-cli htlc.reclaim "),
+      JSON.stringify(bare),
+    );
+    ok(
+      `${field} with ${name}: the injected text is visible, as a comment`,
+      text.includes("# printf PWNED"),
+    );
+  }
 }
 
 console.log(fails === 0 ? "\nall checks passed" : `\n${fails} FAILED`);

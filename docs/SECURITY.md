@@ -161,10 +161,11 @@ BTC. Ferry therefore refuses to build the create, withholds the button and the
 printed `znn-cli` command, and keeps Auto Mode waiting, until the funding is
 present at the contract, covers the agreed amount, is mined at least
 `commitConfirmations` deep (`wasm/swap.go`, currently **one** block), and is
-still unspent, with the Bitcoin locktime not yet passed and far enough away to
-fit a Zenon leg before it -- all re-read from the chain both when the block is
-built and again immediately before it is handed to the wallet. A chain that
-cannot be read is a refusal. No `znn-cli` create command is printed for that
+still unspent -- all re-read from the chain both when the block is built and
+again immediately before it is handed to the wallet -- and the audited
+contract's locktime, which is fixed by the script and so is read from the
+swap record, not yet passed and far enough away to fit a Zenon leg before it.
+A chain that cannot be read is a refusal. No `znn-cli` create command is printed for that
 leg at all: a terminal runs no check, and a gate on the text that relies on a
 remembered answer always has a moment where the answer is stale. The block
 prints the leg's terms as comments for anyone who must compose the command by

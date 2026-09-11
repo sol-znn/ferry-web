@@ -126,17 +126,22 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
             'Then htlc.create takes, in order:',
         ),
       )
-      lines.push(`#   recipient  ${peer}`)
-      lines.push(`#   token      ${token}`)
-      lines.push(`#   amount     ${amount}`)
-      lines.push(
-        `#   hours      ${hours || '<hours>'}` +
+      // Each term through comment(), whole: these values come from the offer,
+      // the form and the chain, and a line break inside one would otherwise
+      // end the comment and start a command.
+      for (const term of [
+        `  recipient  ${peer}`,
+        `  token      ${token}`,
+        `  amount     ${amount}`,
+        `  hours      ${hours || '<hours>'}` +
           (hours && hours > ZNN_CLI_MAX_HOURS
             ? ` (over znn-cli's ${ZNN_CLI_MAX_HOURS}h cap: use the wallet)`
             : ''),
-      )
-      lines.push('#   hashtype   1  (SHA-256, what Bitcoin OP_SHA256 requires)')
-      lines.push(`#   hashlock   ${sw.secretHashHex}`)
+        '  hashtype   1  (SHA-256, what Bitcoin OP_SHA256 requires)',
+        `  hashlock   ${sw.secretHashHex}`,
+      ]) {
+        lines.push(...comment(term))
+      }
       if (sw.fundingCommitBlocker) {
         lines.push('#')
         lines.push(...comment(`As of the last refresh: ${sw.fundingCommitBlocker}.`))

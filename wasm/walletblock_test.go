@@ -224,6 +224,11 @@ func TestCounterLegFundingGate(t *testing.T) {
 			{"gone", &stubBackend{utxos: nil}, "no longer unspent"},
 			{"replaced by a short one", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 50_000, Status: mined}}}, "400000 sat was agreed"},
 			{"unmined again", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 400_000}}}, "mempool"},
+			// The address holds money, but not the outpoint this swap adopted:
+			// a different transaction, or the same one's other output. Neither
+			// is the funding, whatever its value.
+			{"another output at the address", &stubBackend{utxos: []chain.UTXO{{TxID: "2222222222222222222222222222222222222222222222222222222222222222", Value: 400_000, Status: mined}}}, "no longer unspent"},
+			{"same txid, other vout", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Vout: 1, Value: 400_000, Status: mined}}}, "no longer unspent"},
 			{"unreadable", failingBackend{}, "could not re-read"},
 		}
 		for _, c := range cases {
@@ -390,3 +395,55 @@ func (failingBackend) Broadcast(context.Context, string) (string, error) {
 	return "", errors.New("node down")
 }
 func (failingBackend) Name() string { return "failing" }
+
+// A Zenon amount is a term of the trade that ends up in a printed command, so
+// it is a plain decimal or it is refused -- at the form and at the offer, the
+// two doors it comes in by. A stranger's offer carrying a line break inside
+// its amount is the case that matters: printed, it would be a line in the
+// receiver's terminal.
+func TestZenonAmountsAreCanonical(t *testing.T) {
+	for _, good := range []string{"", "10", "0.5", "1.25", "100000000"} {
+		if err := canonicalZenonAmount(good); err != nil {
+			t.Errorf("%q refused: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"10\nprintf PWNED", "10\r\n", "1e3", "+10", "-1", "1,000", "ten", ".5", "5."} {
+		if err := canonicalZenonAmount(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+
+	// The offer door.
+	base := Offer{Version: 1, Network: "regtest", FromRole: RoleInitiator, BTCLeg: LegSend,
+		SecretHash: strings.Repeat("ab", 32), PKH: strings.Repeat("cd", 20), AmountSats: 400_000}
+	fine := base
+	fine.ZenonAmt = "10"
+	enc, err := fine.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if _, err := DecodeOffer(enc); err != nil {
+		t.Errorf("a plain amount in an offer was refused: %v", err)
+	}
+	evil := base
+	evil.ZenonAmt = "10\nznn-cli htlc.create ATTACKER"
+	enc, err = evil.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if _, err := DecodeOffer(enc); err == nil || !strings.Contains(err.Error(), "plain decimal") {
+		t.Errorf("an offer with a line break in its amount was not refused: %v", err)
+	}
+
+	// The form door.
+	m := newManager(t, &stubBackend{feeRate: 2})
+	if _, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000,
+		DestAddr: regtestDest, ZenonAmount: "10\r\nprintf PWNED"}); err == nil ||
+		!strings.Contains(err.Error(), "plain decimal") {
+		t.Errorf("a create with a line break in its amount was not refused: %v", err)
+	}
+	if _, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000,
+		DestAddr: regtestDest, ZenonAmount: " 1.25 "}); err != nil {
+		t.Errorf("a plain amount was refused at create: %v", err)
+	}
+}
