@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, onUnmounted, ref, watch} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -43,7 +43,6 @@ import {api, download} from '@/core/api'
 import {btc, sats, stamp, tokenName, until} from '@/core/format'
 import {STAGES, nextStep, stage, waitingOnThem} from '@/core/progress'
 import {cliNodeURL, znnCommands} from '@/core/zenon-commands'
-import {createCliCreateGate} from '@/core/cli-create-gate'
 import {useSettings} from '@/core/composables/useSettings'
 import {useUnisat} from '@/core/composables/useUnisat'
 import {useUnlockCost} from '@/core/composables/useUnlockCost'
@@ -346,60 +345,11 @@ const needsSecret = computed(
 )
 const canRefund = computed(() => props.swap.refundable && props.swap.state !== 'refunded')
 
-/**
- * Whether the printed create command may be printed, decided against the chain
- * now rather than off the swap record.
- *
- * This is the participant in a Bitcoin-initiated swap, whose ZNN answers the
- * initiator's payment. The wallet button is behind Go's gate twice over -- when
- * the block is built and again before it is handed over -- but a command copied
- * into a terminal passes through no gate at all, so the text is the gate. The
- * lifecycle lives in core/cli-create-gate.ts, where it can be tested: asking
- * revokes, only the latest answer counts, and a pass expires. This wires it to
- * the fail-closed engine check, re-asks whenever the swap, the panel or the
- * Bitcoin settings change, and re-asks on a timer besides -- a refresh that
- * failed fires no change, and the timer is what keeps a pass from outliving
- * the chain's answer in that case.
- */
-const cliCreateWaitsOnBtc = computed(
-  () => props.swap.zenonHtlcIsOurs && props.swap.btcLegIsInitiators && !props.swap.zenon?.htlcId,
-)
-const cliGate = createCliCreateGate({
-  check: () => api.fundingCheck(props.swap.id, settings.value),
-})
-const cliCreate = ref(cliGate.state())
-async function recheckCliCreate() {
-  if (!showCli.value || !cliCreateWaitsOnBtc.value) {
-    cliGate.revoke()
-    cliCreate.value = cliGate.state()
-    return
-  }
-  const pending = cliGate.run()
-  // Withheld from this moment: run() has already revoked, and the answer is
-  // not in yet.
-  cliCreate.value = cliGate.state()
-  await pending
-  cliCreate.value = cliGate.state()
-}
-watch(
-  [() => props.swap, showCli, () => settings.value.btcEsplora, () => settings.value.network],
-  () => void recheckCliCreate(),
-  {immediate: true},
-)
-// The timer re-asks, and also re-reads the verdict, which is how a pass that
-// has run out its ttl stops printing even before the next answer arrives.
-const cliTimer = setInterval(() => void recheckCliCreate(), 20_000)
-onUnmounted(() => clearInterval(cliTimer))
-
 // The commands are recomputed rather than called twice in the template: the
 // <pre> and the copy button have to hand over the same text, and calling the
 // builder in two places is how they end up one render apart.
 const commands = computed(() =>
-  znnCommands(props.swap, {
-    nodeURL: cliNodeURL(settings.value.znnUrl),
-    createAllowed: cliCreate.value.allowed,
-    createBlocker: cliCreate.value.blocker,
-  }),
+  znnCommands(props.swap, {nodeURL: cliNodeURL(settings.value.znnUrl)}),
 )
 
 /**
@@ -1311,7 +1261,8 @@ async function downloadRecovery() {
         </p>
         <p class="mt-2">
           Refresh keeps checking. The create appears &mdash; and runs by itself under Auto Mode
-          &mdash; once it is settled, and the znn-cli command for it is withheld until then too.
+          &mdash; once it is settled. No znn-cli create command is printed for this leg at any
+          point: a terminal runs no check, so the wallet button is the way to create it.
         </p>
       </Note>
 

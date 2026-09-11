@@ -1,22 +1,20 @@
 // Checks the znn-cli commands the card prints, against the one rule the engine
 // cannot enforce on them: a create that answers the counterparty's Bitcoin
-// funding is printed as a command only when the caller says a live, fail-closed
-// check of that funding passed just now -- never off the swap's own record.
+// funding is never printed as a command -- the terms are, as comments -- because
+// a terminal runs no check and a text gate on a remembered answer always has a
+// stale moment.
 //
-//   node scripts/zenon-commands.mjs
+//   node --experimental-strip-types scripts/zenon-commands.mjs
 //
 // The wallet button is behind Go's gate (walletBlock refuses to build the
 // block, and the panel re-checks before handing it over). A command in a
-// terminal is not, so the text itself has to carry the refusal -- and this is
-// what pins that it does. Like wallet-provider.mjs it loads the TypeScript as
-// it ships (Node 24+ strips the types), with no chain and no browser.
+// terminal is not, so the text withholds it -- and this is what pins that it
+// does. Like wallet-provider.mjs it loads the TypeScript as it ships, with no
+// chain and no browser.
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { createCliCreateGate } = await import(
-  pathToFileURL(resolve(here, "../ui/src/core/cli-create-gate.ts")).href
-);
 const { znnCommands } = await import(
   pathToFileURL(resolve(here, "../ui/src/core/zenon-commands.ts")).href
 );
@@ -38,6 +36,7 @@ const base = {
   btcLegIsInitiators: true,
   secretArrivesOnZenon: true,
   secretHashHex: "ab".repeat(32),
+  amountSats: 400000,
   zenon: {
     tokenStandard: "zts1znnxxxxxxxxxxxxx9z4ulx",
     amountDisplay: "10",
@@ -48,100 +47,116 @@ const base = {
 };
 const commands = (sw, ctx) =>
   znnCommands(sw, ctx)
-    .split("\n")
+    .split(/\r\n|\r|\n/)
     .filter((l) => l && !l.startsWith("#"));
 const hasCreate = (sw, ctx) =>
   commands(sw, ctx).some((l) => l.startsWith("znn-cli htlc.create "));
 
-section(
-  "a create that answers Bitcoin funding is withheld unless a live check just passed",
-);
+section("a create that answers Bitcoin funding is never printed as a command");
 
-// The reproduction from the review: the swap record says committed, and that
-// record can be stale -- an expired leg, a refresh that could not read the
-// chain. The generator must not trust it. No context means not checked.
-const cachedCommitted = {
-  ...base,
-  fundingCommitted: true,
-  fundingCommitBlocker: "",
-};
-ok(
-  'a cached "committed" record alone prints no htlc.create',
-  !hasCreate(cachedCommitted),
-  commands(cachedCommitted).join(" | "),
-);
-ok(
-  "and says the funding was not checked just now",
-  znnCommands(cachedCommitted).includes(
-    "not been checked against the chain just now",
-  ),
-);
-
-for (const [name, blocker] of [
+// Whatever the record says -- committed, blocked, or nothing -- and whatever a
+// caller passes: this shape's create is withheld. The review reproduced three
+// stale moments in three text gates; this is the fourth answer.
+for (const [name, sw, ctx] of [
+  ["a record that says committed", { ...base, fundingCommitted: true }, {}],
   [
     "nothing seen",
-    "their Bitcoin funding has not been seen at the contract yet",
+    {
+      ...base,
+      fundingCommitted: false,
+      fundingCommitBlocker:
+        "their Bitcoin funding has not been seen at the contract yet",
+    },
+    {},
   ],
   [
     "in the mempool",
-    "their funding is still in the mempool, where the sender can replace it",
+    {
+      ...base,
+      fundingCommitted: false,
+      fundingCommitBlocker:
+        "their funding is still in the mempool, where the sender can replace it",
+    },
+    {},
   ],
-  ["short", "the contract holds 100000 sat but 400000 sat was agreed"],
-  ["spent", "the contract output has already been spent"],
   [
     "expired",
-    "the Bitcoin contract's timelock has passed, so their funding is theirs to take back",
+    {
+      ...base,
+      fundingCommitted: false,
+      fundingCommitBlocker:
+        "the Bitcoin contract's timelock has passed, so their funding is theirs to take back",
+    },
+    {},
   ],
-  ["unreadable", "could not re-read the contract address before locking ZNN"],
+  [
+    "a caller that claims it checked",
+    { ...base, fundingCommitted: true },
+    { createAllowed: true },
+  ],
 ]) {
-  const sw = {
-    ...base,
-    fundingCommitted: false,
-    fundingCommitBlocker: blocker,
-  };
-  const ctx = { createAllowed: false, createBlocker: blocker };
   const text = znnCommands(sw, ctx);
   ok(
     `${name}: no htlc.create command`,
     !hasCreate(sw, ctx),
     commands(sw, ctx).join(" | "),
   );
-  ok(`${name}: the reason is in the text`, text.includes(blocker));
   ok(
     `${name}: the reclaim is still there for a leg that exists later`,
     text.includes("htlc.reclaim"),
   );
+  ok(
+    `${name}: it points at the wallet button`,
+    text.includes("Use the wallet button"),
+  );
 }
-
-section("and is printed once a live check has passed");
-const allowed = { createAllowed: true };
-ok(
-  "checked and allowed: the command is printed",
-  hasCreate(cachedCommitted, allowed),
-);
-ok(
-  "and it carries the hashlock and hash type 1",
-  commands(cachedCommitted, allowed).some((l) =>
-    l.includes(` 1 ${"ab".repeat(32)}`),
-  ),
-);
-ok(
-  "a record that says committed does not override a live refusal",
-  !hasCreate(cachedCommitted, {
-    createAllowed: false,
-    createBlocker: "the funding output is no longer unspent",
-  }),
-);
+{
+  const sw = {
+    ...base,
+    fundingCommitted: false,
+    fundingCommitBlocker:
+      "the contract holds 100000 sat but 400000 sat was agreed",
+  };
+  const text = znnCommands(sw);
+  ok(
+    "the terms are printed, as comments, for somebody composing it by hand",
+    text.includes(`#   hashlock   ${"ab".repeat(32)}`) &&
+      text.includes(
+        "#   recipient  z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s",
+      ) &&
+      text.includes("#   hashtype   1") &&
+      text.includes("#   hours      22"),
+  );
+  ok(
+    "and the last refresh's verdict is shown",
+    text.includes("As of the last refresh: the contract holds 100000 sat"),
+  );
+  ok(
+    "with nothing executable but the reclaim",
+    commands(sw).length === 1 &&
+      commands(sw)[0].startsWith("znn-cli htlc.reclaim "),
+    commands(sw).join(" | "),
+  );
+}
 
 section("the shapes that never wait are unaffected");
 ok(
-  "the Zenon-initiated leg prints its create with nothing on Bitcoin, and no check",
+  "the Zenon-initiated leg prints its create with nothing on Bitcoin",
   hasCreate({
     ...base,
     btcLegIsInitiators: false,
     secretArrivesOnZenon: false,
     fundingCommitted: true,
   }),
+);
+ok(
+  "and it carries the hashlock and hash type 1",
+  commands({
+    ...base,
+    btcLegIsInitiators: false,
+    secretArrivesOnZenon: false,
+    fundingCommitted: true,
+  }).some((l) => l.includes(` 1 ${"ab".repeat(32)}`)),
 );
 ok(
   "the side that unlocks the counterparty's HTLC still gets its unlock",
@@ -161,8 +176,8 @@ for (const [name, evil] of [
   ["CRLF", "backend failed\r\nprintf PWNED"],
 ]) {
   const sw = { ...base, fundingCommitted: false, fundingCommitBlocker: evil };
-  const text = znnCommands(sw, { createAllowed: false, createBlocker: evil });
-  const bare = text.split(/\r\n|\r|\n/).filter((l) => l && !l.startsWith("#"));
+  const text = znnCommands(sw);
+  const bare = commands(sw);
   ok(
     `${name} in the reason leaves no uncommented line but the reclaim`,
     bare.length === 1 && bare[0].startsWith("znn-cli htlc.reclaim "),
@@ -171,109 +186,6 @@ for (const [name, evil] of [
   ok(
     `${name}: the injected text is still visible, as a comment`,
     text.includes("# printf PWNED"),
-  );
-}
-
-section(
-  "the card's authorisation lifecycle: asking revokes, latest wins, passes expire",
-);
-{
-  // A check whose answer this test controls, and a clock it advances by hand.
-  let clock = 1_000_000;
-  const deferred = () => {
-    let resolve, reject;
-    const promise = new Promise(
-      (res, rej) => ((resolve = res), (reject = rej)),
-    );
-    return { promise, resolve, reject };
-  };
-  const answers = [];
-  const gate = createCliCreateGate({
-    check: () => answers.shift().promise,
-    ttlMs: 45_000,
-    now: () => clock,
-  });
-  ok("withheld before anything was asked", gate.state().allowed === false);
-
-  // 1. A pass, then a re-check that has not answered: withheld while pending.
-  const first = deferred();
-  answers.push(first);
-  const run1 = gate.run();
-  first.resolve({ ok: true });
-  await run1;
-  ok("a pass allows", gate.state().allowed === true);
-  const second = deferred();
-  answers.push(second);
-  const run2 = gate.run();
-  ok(
-    "asking again withholds at once, before the answer",
-    gate.state().allowed === false,
-  );
-  second.resolve({ ok: true });
-  await run2;
-  ok("and allows again once it answers", gate.state().allowed === true);
-
-  // 2. An older check answering after a newer refusal must not reopen it.
-  const slow = deferred();
-  const fast = deferred();
-  answers.push(slow, fast);
-  const runSlow = gate.run();
-  const runFast = gate.run();
-  fast.reject(new Error("the funding output is no longer unspent"));
-  await runFast;
-  ok("the newer refusal withholds", gate.state().allowed === false);
-  ok(
-    "and names the reason",
-    gate.state().blocker.includes("no longer unspent"),
-  );
-  slow.resolve({ ok: true });
-  await runSlow;
-  ok(
-    "an older pass arriving later does not reopen it",
-    gate.state().allowed === false,
-  );
-  ok(
-    "nor overwrite the reason",
-    gate.state().blocker.includes("no longer unspent"),
-  );
-
-  // 3. A pass, then the world moves: a settings change revokes; time expires.
-  const third = deferred();
-  answers.push(third);
-  const run3 = gate.run();
-  third.resolve({ ok: true });
-  await run3;
-  ok("a fresh pass allows", gate.state().allowed === true);
-  gate.revoke();
-  ok(
-    "revoking (a settings change, an expired leg) withholds",
-    gate.state().allowed === false,
-  );
-  const fourth = deferred();
-  answers.push(fourth);
-  const run4 = gate.run();
-  fourth.resolve({ ok: true });
-  await run4;
-  clock += 44_000;
-  ok("a pass holds inside its ttl", gate.state().allowed === true);
-  clock += 2_000;
-  ok(
-    "and lapses after it, with no re-check having arrived",
-    gate.state().allowed === false,
-  );
-
-  // 4. A failed check withholds and says why.
-  const fifth = deferred();
-  answers.push(fifth);
-  const run5 = gate.run();
-  fifth.reject(
-    new Error("could not re-read the contract address before locking ZNN"),
-  );
-  await run5;
-  ok("a failed check withholds", gate.state().allowed === false);
-  ok(
-    "and carries the reason",
-    gate.state().blocker.includes("could not re-read"),
   );
 }
 

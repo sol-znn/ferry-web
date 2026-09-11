@@ -54,17 +54,6 @@ export function comment(text: string): string[] {
 export interface CommandContext {
   /** The Zenon node this browser is set to, translated to znn-cli's transport. */
   nodeURL?: string
-  /**
-   * For a create that answers the counterparty's Bitcoin funding: whether a
-   * fail-closed check of that funding against the chain passed JUST NOW. Not
-   * the swap's cached `fundingCommitted`, which is only as current as the last
-   * refresh and survives a refresh that could not read the chain. Absent means
-   * not checked, and not checked means withheld -- the command is the one path
-   * the engine cannot gate, so the text has to be.
-   */
-  createAllowed?: boolean
-  /** Why it is not allowed, when the check refused; shown in the command's place. */
-  createBlocker?: string
 }
 
 /**
@@ -108,30 +97,50 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
       `# This is the ${ours} leg, so it must expire ` +
         `${sw.btcLegIsInitiators ? 'BEFORE' : 'AFTER'} the Bitcoin contract.`,
     )
-    // The same gate the wallet button is behind, applied to the one path the
-    // engine cannot stop: a command run in a terminal. Where this leg answers
-    // the counterparty's Bitcoin funding, the command is printed only when the
-    // caller says a live, fail-closed check of that funding passed just now;
-    // the swap's own cached flag is not consulted, because it is only as
-    // current as the last refresh. Printed as a comment rather than a command,
-    // because a command that is nearly right is a command somebody runs
-    // without reading -- and this one, run now, hands the counterparty the ZNN
-    // for a payment they can still take back.
-    const waitsOnBtc = sw.btcLegIsInitiators
-    if (waitsOnBtc && ctx.createAllowed !== true) {
+    if (sw.btcLegIsInitiators) {
+      // This leg answers the counterparty's Bitcoin funding, and the create
+      // is NOT printed as a command for it, whatever the swap record says. The
+      // wallet button is behind Go's gate twice over -- the funding is read
+      // off the chain when the block is built and again before it is signed
+      // -- but a command copied into a terminal passes through no gate at
+      // all, and every attempt to gate the text on a remembered answer has a
+      // moment where the answer is stale. So the terms are printed, as
+      // comments, and the command is not: somebody who must use znn-cli for
+      // this leg composes it after checking the funding themselves, at the
+      // moment they run it.
       lines.push(
         ...comment(
-          `NOT YET: ${
-            ctx.createBlocker ||
-            sw.fundingCommitBlocker ||
-            'their Bitcoin funding has not been checked against the chain just now'
-          }.`,
+          'No create command is printed for this leg. It answers their Bitcoin payment, ' +
+            'and locking ZNN against a payment that can still be replaced or reclaimed ' +
+            'hands them the ZNN: they already hold the secret. Use the wallet button ' +
+            'above, which checks the funding against the chain when the block is built ' +
+            'and again before it is signed.',
         ),
       )
-      lines.push('# Your HTLC answers their Bitcoin payment. A payment they can still replace is')
-      lines.push('# one they can take back after you lock ZNN, and they already hold the secret.')
-      lines.push('# The create command is withheld until the card says the funding is confirmed')
-      lines.push('# and covers the agreed amount; Refresh keeps checking.')
+      lines.push('#')
+      lines.push(
+        ...comment(
+          'If you must use znn-cli, check on your own node, immediately before running ' +
+            `it, that the contract output is unspent, mined, holds ${sw.amountSats} sat, ` +
+            'and that the Bitcoin locktime is far enough away to fit this leg before it. ' +
+            'Then htlc.create takes, in order:',
+        ),
+      )
+      lines.push(`#   recipient  ${peer}`)
+      lines.push(`#   token      ${token}`)
+      lines.push(`#   amount     ${amount}`)
+      lines.push(
+        `#   hours      ${hours || '<hours>'}` +
+          (hours && hours > ZNN_CLI_MAX_HOURS
+            ? ` (over znn-cli's ${ZNN_CLI_MAX_HOURS}h cap: use the wallet)`
+            : ''),
+      )
+      lines.push('#   hashtype   1  (SHA-256, what Bitcoin OP_SHA256 requires)')
+      lines.push(`#   hashlock   ${sw.secretHashHex}`)
+      if (sw.fundingCommitBlocker) {
+        lines.push('#')
+        lines.push(...comment(`As of the last refresh: ${sw.fundingCommitBlocker}.`))
+      }
     } else if (hours && hours > ZNN_CLI_MAX_HOURS) {
       lines.push(
         `# znn-cli cannot express this leg: it caps htlc.create at ${ZNN_CLI_MAX_HOURS}h and this` +

@@ -164,11 +164,13 @@ present at the contract, covers the agreed amount, is mined at least
 still unspent, with the Bitcoin locktime not yet passed and far enough away to
 fit a Zenon leg before it -- all re-read from the chain both when the block is
 built and again immediately before it is handed to the wallet. A chain that
-cannot be read is a refusal. The printed `znn-cli` command, which no engine can
-gate once it is in a terminal, is printed only while that same live check
-passes, and is asked again on every refresh; the swap's own remembered state is
-never enough to print it. The Zenon-initiated ordering is exempt: that leg goes
-first by design.
+cannot be read is a refusal. No `znn-cli` create command is printed for that
+leg at all: a terminal runs no check, and a gate on the text that relies on a
+remembered answer always has a moment where the answer is stale. The block
+prints the leg's terms as comments for anyone who must compose the command by
+hand, with the instruction to check the funding on their own node immediately
+before running it. The Zenon-initiated ordering is exempt: that leg goes first
+by design.
 
 One block is the threshold at which replacement stops being free: undoing a
 mined payment means mining a competing block. It is not finality. A reorg one
