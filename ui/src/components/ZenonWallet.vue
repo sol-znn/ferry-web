@@ -95,10 +95,21 @@ watch(walletEpoch, () => {
 // compares by identity, so it fired on every reload of the swap list. That was
 // invisible while a reload only followed something the user did, and became a
 // prepared block vanishing mid-read once the list started refreshing itself.
-watch([() => props.swap.id, () => props.swap.lockTime, () => props.swap.zenon?.htlcId], () => {
-  plan.value = null
-  sync.value = null
-})
+watch(
+  [
+    () => props.swap.id,
+    () => props.swap.lockTime,
+    () => props.swap.zenon?.htlcId,
+    // The Bitcoin funding this create answers moving -- reorganised out,
+    // replaced, spent -- is the third way. The block is not wrong, but the
+    // reason to sign it has gone.
+    () => props.swap.fundingCommitted,
+  ],
+  () => {
+    plan.value = null
+    sync.value = null
+  },
+)
 
 const label = computed(
   () =>
@@ -199,6 +210,24 @@ async function sign() {
         `This block was built for ${current.signer} and the wallet now has ` +
           `${walletAddress.value || 'no account'} selected. Nothing was sent — check it again.`,
       )
+    }
+
+    // For a create that answers the counterparty's Bitcoin funding, the chain
+    // is asked one more time, now: the block was built against a funding that
+    // was confirmed at prepare time, and a person may have spent minutes
+    // reading the summary. The engine re-read the chain when it built the
+    // block; this re-reads it before the block leaves the page. Refresh is the
+    // same call the card's timer makes, so the swap it returns is the one the
+    // card would show next.
+    if (props.action === 'create' && props.swap.btcLegIsInitiators) {
+      const fresh = await api.refresh(props.swap.id, settings.value)
+      if (!fresh.fundingCommitted) {
+        plan.value = null
+        throw new Error(
+          `Not sent: ${fresh.fundingCommitBlocker}. The block has been discarded; it is ` +
+            `rebuilt when their funding is settled again.`,
+        )
+      }
     }
 
     const sent = await walletSend(current.block)

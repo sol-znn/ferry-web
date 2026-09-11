@@ -111,6 +111,12 @@ type swapView struct {
 	SecretArrivesOnZenon bool `json:"secretArrivesOnZenon"`
 	// FundingShort flags a contract funded for less than was agreed.
 	FundingShort bool `json:"fundingShort,omitempty"`
+	// FundingCommitted says nothing about the counterparty's Bitcoin funding
+	// stands in the way of this side creating its Zenon HTLC; where something
+	// does, FundingCommitBlocker names it. Derived in Go so the card's gate and
+	// planCreate's refusal are one rule.
+	FundingCommitted     bool   `json:"fundingCommitted"`
+	FundingCommitBlocker string `json:"fundingCommitBlocker,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -163,6 +169,8 @@ func view(sw *Swap) *swapView {
 		// initiator and this user created the Zenon HTLC.
 		SecretArrivesOnZenon: sw.SecretArrivesOnZenon(),
 		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
+		FundingCommitted:     sw.FundingCommitted(),
+		FundingCommitBlocker: sw.FundingCommitBlocker(),
 		Funding:              sw.Funding,
 		FundingBroadcast:     sw.FundingBroadcast,
 		RefundTx:             sw.RefundTx,

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/zenon/ferry-web/wasm/chain"
 )
 
 // diffSignedBlock is the check that runs after the wallet has already acted, so
@@ -114,3 +118,138 @@ func TestSameEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// The participant's Zenon HTLC answers the initiator's Bitcoin funding, so it
+// waits for that funding to be real: present, covering the amount, mined, and
+// still unspent. Judged off the record first -- which is what the card shows --
+// and then off the chain, because a record is only as current as the last poll.
+func TestCounterLegFundingGate(t *testing.T) {
+	const txid = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	// The participant receiving BTC in a Bitcoin-initiated swap: the one shape
+	// that waits.
+	waits := func(f *FundingOutput) *Swap {
+		return &Swap{Role: RoleParticipant, Leg: LegReceive, State: StateFunded,
+			AmountSats: 400_000, ContractAddr: "bcrt1qcontract", Funding: f}
+	}
+	mined := chain.Status{Confirmed: true, BlockHeight: 100}
+
+	t.Run("the record", func(t *testing.T) {
+		cases := []struct {
+			name string
+			sw   *Swap
+			want string // "" means committed
+		}{
+			{"nothing seen", waits(nil), "not been seen"},
+			{"in the mempool", waits(&FundingOutput{TxID: txid, Value: 400_000}), "mempool"},
+			{"short", waits(&FundingOutput{TxID: txid, Value: 100_000, Confirmed: true, Confirmations: 3}), "400000 sat was agreed"},
+			{"mined and full", waits(&FundingOutput{TxID: txid, Value: 400_000, Confirmed: true, Confirmations: 1}), ""},
+		}
+		spent := waits(&FundingOutput{TxID: txid, Value: 400_000, Confirmed: true, Confirmations: 6})
+		spent.State = StateRefunded
+		cases = append(cases, struct {
+			name string
+			sw   *Swap
+			want string
+		}{"spent", spent, "already been spent"})
+		for _, c := range cases {
+			got := c.sw.FundingCommitBlocker()
+			if c.want == "" && got != "" {
+				t.Errorf("%s: blocked by %q, want committed", c.name, got)
+			}
+			if c.want != "" && !strings.Contains(got, c.want) {
+				t.Errorf("%s: blocker %q does not mention %q", c.name, got, c.want)
+			}
+			if c.sw.FundingCommitted() != (got == "") {
+				t.Errorf("%s: FundingCommitted disagrees with the blocker", c.name)
+			}
+		}
+	})
+
+	t.Run("the shapes that do not wait", func(t *testing.T) {
+		// The Zenon leg is the initiator's: it goes first, before any Bitcoin
+		// exists to wait for. And the side that funds Bitcoin never creates.
+		for _, sw := range []*Swap{
+			{Role: RoleInitiator, Leg: LegReceive},
+			{Role: RoleInitiator, Leg: LegSend},
+			{Role: RoleParticipant, Leg: LegSend},
+		} {
+			if sw.ZenonCreateWaitsOnBtc() {
+				t.Errorf("%s/%s waits on Bitcoin funding", sw.Role, sw.Leg)
+			}
+			if b := sw.FundingCommitBlocker(); b != "" {
+				t.Errorf("%s/%s with no funding is blocked: %q", sw.Role, sw.Leg, b)
+			}
+			// A chain that cannot be read must not matter here, because it is
+			// never asked.
+			if err := requireCounterLegFunding(context.Background(), failingBackend{}, sw); err != nil {
+				t.Errorf("%s/%s consulted the chain: %v", sw.Role, sw.Leg, err)
+			}
+		}
+	})
+
+	t.Run("the chain, freshly", func(t *testing.T) {
+		sw := waits(&FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true, Confirmations: 2})
+		cases := []struct {
+			name    string
+			backend chain.Backend
+			want    string
+		}{
+			{"still there", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 400_000, Status: mined}}}, ""},
+			{"gone", &stubBackend{utxos: nil}, "no longer unspent"},
+			{"replaced by a short one", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 50_000, Status: mined}}}, "400000 sat was agreed"},
+			{"unmined again", &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 400_000}}}, "mempool"},
+			{"unreadable", failingBackend{}, "could not re-read"},
+		}
+		for _, c := range cases {
+			err := requireCounterLegFunding(context.Background(), c.backend, sw)
+			if c.want == "" && err != nil {
+				t.Errorf("%s: refused: %v", c.name, err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+				t.Errorf("%s: got %v, want a refusal mentioning %q", c.name, err, c.want)
+			}
+		}
+		// Depth is counted against the tip the stub reports (100): a funding in
+		// block 100 is one deep, so a two-deep rule refuses it and a one-deep
+		// rule does not.
+		fresh := &stubBackend{utxos: []chain.UTXO{{TxID: txid, Value: 400_000, Status: mined}}}
+		if err := checkFundingOnChain(context.Background(), fresh, sw, 2); err == nil ||
+			!strings.Contains(err.Error(), "1 of the 2 confirmations") {
+			t.Errorf("a one-deep funding passed a two-deep rule: %v", err)
+		}
+		if err := checkFundingOnChain(context.Background(), fresh, sw, 1); err != nil {
+			t.Errorf("a one-deep funding failed a one-deep rule: %v", err)
+		}
+	})
+}
+
+// failingBackend answers every question with an error, for the checks that
+// must refuse on a chain they cannot read -- and the shapes that must never
+// ask.
+type failingBackend struct{}
+
+func (failingBackend) TipHeight(context.Context) (int64, error) {
+	return 0, errors.New("node down")
+}
+func (failingBackend) AddressUTXOs(context.Context, string) ([]chain.UTXO, error) {
+	return nil, errors.New("node down")
+}
+func (failingBackend) TxStatus(context.Context, string) (chain.Status, error) {
+	return chain.Status{}, errors.New("node down")
+}
+func (failingBackend) RawTx(context.Context, string) (string, error) {
+	return "", errors.New("node down")
+}
+func (failingBackend) OutspendOf(context.Context, string, uint32) (*chain.Outspend, error) {
+	return nil, errors.New("node down")
+}
+func (failingBackend) FeeRate(context.Context, int) (float64, error) {
+	return 0, errors.New("node down")
+}
+func (failingBackend) BlockHashAt(context.Context, int64) (string, error) {
+	return "", errors.New("node down")
+}
+func (failingBackend) Broadcast(context.Context, string) (string, error) {
+	return "", errors.New("node down")
+}
+func (failingBackend) Name() string { return "failing" }

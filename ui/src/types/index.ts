@@ -140,6 +140,14 @@ export interface Swap {
   secretArrivesOnZenon: boolean
   /** A contract funded for less than was agreed. */
   fundingShort?: boolean
+  /** Nothing about the counterparty's Bitcoin funding stands in the way of
+   *  this side creating its Zenon HTLC. False only for the participant in a
+   *  Bitcoin-initiated swap while that funding is missing, short, unconfirmed
+   *  or spent -- and then fundingCommitBlocker says which. Computed in Go
+   *  (Swap.FundingCommitBlocker) so the card's gate and the engine's refusal
+   *  are one rule. */
+  fundingCommitted: boolean
+  fundingCommitBlocker?: string
 
   funding?: FundingOutput
   refundTx?: SpendResult

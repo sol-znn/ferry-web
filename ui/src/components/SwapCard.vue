@@ -415,6 +415,13 @@ const showHashlock = computed(
 const zenonAction = computed<WalletAction | null>(() => {
   if (props.swap.zenonHtlcIsOurs) {
     if (!live.value || props.swap.zenon?.htlcId) return null
+    // Where this leg answers the counterparty's Bitcoin funding, it is not
+    // offered until that funding is real: present, covering the amount, mined
+    // and unspent, as Go judges it. Not mounting the wallet panel is what
+    // makes Auto Mode wait here rather than halt on the engine's refusal --
+    // and the panel appears, and autopilot moves, the moment a refresh says
+    // the funding has settled.
+    if (!props.swap.fundingCommitted) return null
     return 'create'
   }
   if (props.swap.zenon?.unlockHash) return null
@@ -1300,6 +1307,31 @@ async function downloadRecovery() {
           :auto="autoOn"
           @done="zenonDone(zenonAction)"
         />
+        <!-- The create is withheld, and why. This is the participant in a
+             swap the Bitcoin side initiated: their ZNN answers a payment that
+             is not yet real, and locking it against one the sender can still
+             replace hands them the ZNN for nothing. Said here because the
+             button that would have produced the engine's refusal is not
+             shown. -->
+        <Note
+          v-if="swap.zenonHtlcIsOurs && !swap.zenon?.htlcId && live && swap.fundingCommitBlocker"
+          variant="warn"
+          summary="Not locking ZNN yet: their Bitcoin funding is not settled"
+        >
+          <p>
+            {{
+              swap.fundingCommitBlocker.charAt(0).toUpperCase() +
+              swap.fundingCommitBlocker.slice(1)
+            }}. Your Zenon HTLC answers that payment, so it waits until the payment is mined and
+            covers the agreed amount. A payment still in a mempool is one its sender can replace
+            &mdash; and they already hold the secret that would open your HTLC.
+          </p>
+          <p class="mt-2">
+            Refresh keeps checking, and the create appears here &mdash; and runs by itself under
+            Auto Mode &mdash; once it is settled. The same applies if you create the HTLC with
+            znn-cli instead: do not run that command before this notice clears.
+          </p>
+        </Note>
         <ZenonWallet
           v-if="zenonReclaimable"
           :swap="swap"

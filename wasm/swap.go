@@ -360,6 +360,60 @@ func (s *Swap) SecretArrivesOnZenon() bool {
 	return s.ZenonHtlcIsOurs() && s.Role == RoleParticipant
 }
 
+// commitConfirmations is how deep the counterparty's Bitcoin funding has to be
+// before this side locks ZNN against it.
+//
+// One block is the threshold that matters: a payment in the mempool can be
+// replaced by its sender for the cost of a slightly higher fee, so locking ZNN
+// against one lets an initiator who already holds the secret take the ZNN and
+// keep the BTC. Once mined, replacing it means mining a competing block. A
+// deeper requirement buys protection against a reorg at the cost of ten minutes
+// a block, on a swap that runs for a day or two; the constant is here so that
+// trade can be changed in one place.
+const commitConfirmations = 1
+
+// ZenonCreateWaitsOnBtc reports whether this side's Zenon HTLC is created
+// AGAINST the counterparty's Bitcoin funding -- the participant's leg, in a
+// swap the Bitcoin side initiated. That is the one shape where locking ZNN is a
+// response to money already on the other chain, and so the one shape where it
+// must wait for that money to be real. When the Zenon leg is the initiator's it
+// goes first by design and there is no Bitcoin funding to wait for.
+func (s *Swap) ZenonCreateWaitsOnBtc() bool {
+	return s.ZenonHtlcIsOurs() && s.BitcoinLegIsInitiators()
+}
+
+// FundingCommitBlocker says why the counterparty's Bitcoin funding is not yet
+// something to lock ZNN against, or "" when it is, judged from the record as of
+// the last refresh. Empty for every shape where nothing is waited on. The card
+// shows it in place of the create; planCreate refuses on it and then re-reads
+// the chain, because a record is only as current as the last poll.
+func (s *Swap) FundingCommitBlocker() string {
+	if !s.ZenonCreateWaitsOnBtc() {
+		return ""
+	}
+	f := s.Funding
+	switch {
+	case f == nil:
+		return "their Bitcoin funding has not been seen at the contract yet"
+	case s.State == StateRedeemed || s.State == StateRefunded:
+		return "the contract output has already been spent"
+	case f.Value < s.AmountSats:
+		return fmt.Sprintf("the contract holds %d sat but %d sat was agreed", f.Value, s.AmountSats)
+	case !f.Confirmed:
+		return "their funding is still in the mempool, where the sender can replace it"
+	case f.Confirmations < commitConfirmations:
+		return fmt.Sprintf("their funding has %d of the %d confirmation%s this needs",
+			f.Confirmations, commitConfirmations, plural(commitConfirmations))
+	}
+	return ""
+}
+
+// FundingCommitted is FundingCommitBlocker's verdict as a bool: true whenever
+// nothing stands between this side and creating its Zenon HTLC on account of
+// the Bitcoin funding -- including every shape where that funding is not
+// waited on at all.
+func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
+
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of
 // ZenonLegIsInitiators: exactly one leg of a swap is the initiator's.

@@ -192,8 +192,8 @@ offer:
   grants nothing.
 - **It never refunds**, and it waits where a person would. Abandoning a swap is a
   decision about whether to keep waiting, so that button stays yours; and it will
-  not fund out of turn, or redeem against a funding still sitting in a mempool
-  where the sender can replace it. The first thing that goes wrong stops all of
+  not fund out of turn, redeem against a funding still sitting in a mempool
+  where the sender can replace it, or lock ZNN against one. The first thing that goes wrong stops all of
   it and says so on the card, rather than being retried.
 
 It is armed per swap and never globally, because approval is about this trade,
