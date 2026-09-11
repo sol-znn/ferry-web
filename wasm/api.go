@@ -308,6 +308,7 @@ func init() {
 		"walletSent":   handleWalletSent,
 		"fundingCheck": handleFundingCheck,
 		"secret":       handleSetSecret,
+		"zenonTerms":   handleZenonTerms,
 		"archive":      handleArchive,
 		"delete":       handleDelete,
 		"offer":        handleOffer,
@@ -650,6 +651,27 @@ func handleZenonFind(ctx context.Context, a *API, body []byte) (any, error) {
 		resp["error"] = verr.Error()
 	}
 	return resp, nil
+}
+
+// zenonTerms completes the Zenon terms a swap was created without. Blank
+// fields are left alone; a field that is already recorded refuses a different
+// value. See Manager.SetZenonTerms.
+func handleZenonTerms(_ context.Context, a *API, body []byte) (any, error) {
+	var req struct {
+		ID          string `json:"id"`
+		SelfAddress string `json:"selfAddress"`
+		PeerAddress string `json:"peerAddress"`
+		Amount      string `json:"amount"`
+	}
+	if err := decode(body, &req); err != nil {
+		return nil, err
+	}
+	mgr := &Manager{Store: a.Store}
+	sw, err := mgr.SetZenonTerms(req.ID, req.SelfAddress, req.PeerAddress, req.Amount)
+	if err != nil {
+		return nil, err
+	}
+	return view(sw), nil
 }
 
 func handleSetSecret(_ context.Context, a *API, body []byte) (any, error) {

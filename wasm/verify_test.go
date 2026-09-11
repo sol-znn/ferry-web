@@ -337,3 +337,187 @@ func TestAnUnansweredCheckLeavesTheLegPending(t *testing.T) {
 		}
 	})
 }
+
+// A term the swap never recorded is not a check switched off; it is a check
+// that cannot run, and a check that cannot run must not read as one that
+// passed. This is the finding: an HTLC paying the counterparty's own address
+// verified clean on a swap created without an address of its own, and the
+// unlock that followed published the preimage for it.
+func TestVerifyRefusesTermsThatWereNeverAgreed(t *testing.T) {
+	c := &znn.Client{}
+	info := &znn.HtlcInfo{
+		HashLocked: "z1attacker", TimeLocked: "z1them",
+		HashType: znn.HashTypeSHA256, KeyMaxSize: 32,
+		Amount: "1000000000", TokenStandard: znn.ZnnTokenStandard,
+	}
+	err := c.Verify(info, znn.VerifyParams{
+		ExpectTokenStandard: znn.ZnnTokenStandard,
+		MissingTerms:        []string{"this swap records no Zenon address of your own"},
+	})
+	if err == nil {
+		t.Fatal("an HTLC verified with no recipient to check it against")
+	}
+	if !strings.Contains(err.Error(), "no Zenon address of your own") {
+		t.Errorf("the refusal does not name the missing term: %v", err)
+	}
+	if znn.CheckIncomplete(err) {
+		t.Error("a term nobody agreed was recorded as a check to ask the node about again")
+	}
+}
+
+// The same thing through the manager, against a node: the counterparty's HTLC
+// matches every term this swap recorded -- hashlock, token, amount, expiry --
+// and pays THEM. With no address of this user's own on the swap, it must be
+// refused, not pending; once the address is added it must be refused by name;
+// and an HTLC that pays this user must then verify.
+func TestIncomingHtlcNeedsARecipientAndAnAmount(t *testing.T) {
+	const (
+		mine     = "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d"
+		attacker = "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s"
+		htlcID   = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+	)
+	hash := bytes.Repeat([]byte{0xab}, 32)
+	paysTo := attacker
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reply := func(result any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		}
+		switch req.Method {
+		case "ledger.getFrontierMomentum":
+			reply(map[string]any{"height": 30000, "timestamp": time.Now().Unix()})
+		case "embedded.htlc.getById":
+			reply(map[string]any{
+				"id": htlcID, "timeLocked": attacker, "hashLocked": paysTo,
+				"tokenStandard": znn.ZnnTokenStandard, "amount": "1000000000",
+				"expirationTime": time.Now().Add(20 * time.Hour).Unix(),
+				"hashType":       znn.HashTypeSHA256, "keyMaxSize": 32,
+				"hashLock": base64.StdEncoding.EncodeToString(hash),
+			})
+		case "embedded.token.getByZts":
+			reply(map[string]any{"name": "Zenon", "symbol": "ZNN",
+				"tokenStandard": znn.ZnnTokenStandard, "decimals": 8})
+		default:
+			http.Error(w, "unexpected method "+req.Method, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(node.Close)
+
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	// The Bitcoin initiator who receives ZNN: the counterparty's HTLC is the
+	// incoming one, and it has to pay this user. Created without a Zenon
+	// address of their own, which the form allows.
+	sw := &Swap{
+		ID: "abcdef0123456700", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon:    ZenonLeg{PeerAddress: attacker, AmountDisplay: "10"},
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, _, err := m.VerifyZenon(t.Context(), sw.ID, htlcID)
+	if err == nil {
+		t.Fatal("an HTLC paying the counterparty verified on a swap with no address of its own")
+	}
+	if !strings.Contains(err.Error(), "no Zenon address of your own") {
+		t.Errorf("the refusal does not say what is missing: %v", err)
+	}
+	if got.Zenon.Verified || got.Zenon.VerifyPending {
+		t.Errorf("verified=%v pending=%v after a refusal for a missing term; want neither",
+			got.Zenon.Verified, got.Zenon.VerifyPending)
+	}
+
+	// The address is added. It cannot be adopted from what the entry pays --
+	// that is the attacker's -- so it comes from the user, and the HTLC is now
+	// refused by name.
+	if _, err := m.SetZenonTerms(sw.ID, mine, "", ""); err != nil {
+		t.Fatalf("SetZenonTerms: %v", err)
+	}
+	_, _, err = m.VerifyZenon(t.Context(), sw.ID, htlcID)
+	if err == nil || !strings.Contains(err.Error(), "hashLocked address is "+attacker) {
+		t.Errorf("an HTLC paying the attacker was not refused by name: %v", err)
+	}
+
+	// An HTLC that pays this user, with every term on the swap: verified.
+	paysTo = mine
+	got, _, err = m.VerifyZenon(t.Context(), sw.ID, htlcID)
+	if err != nil {
+		t.Fatalf("an HTLC paying this user on a complete swap was refused: %v", err)
+	}
+	if !got.Zenon.Verified {
+		t.Error("verified flag not set")
+	}
+
+	// And with the amount blank instead, the same HTLC is refused for that.
+	noAmount := &Swap{
+		ID: "abcdef0123456711", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon:    ZenonLeg{SelfAddress: mine, PeerAddress: attacker},
+	}
+	if err := m.Store.Save(noAmount); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, _, err = m.VerifyZenon(t.Context(), noAmount.ID, htlcID)
+	if err == nil || !strings.Contains(err.Error(), "no agreed Zenon amount") {
+		t.Errorf("an HTLC verified on a swap with no agreed amount: %v", err)
+	}
+	if got != nil && got.Zenon.VerifyPending {
+		t.Error("a missing amount was recorded as pending rather than refused")
+	}
+}
+
+// Terms are filled in where blank and never changed where not: a term that can
+// be edited after the fact is one that can be edited to match whatever the
+// counterparty locked. Filling one in un-verifies the leg.
+func TestZenonTermsFillBlanksOnly(t *testing.T) {
+	const (
+		mine  = "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d"
+		other = "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s"
+	)
+	m := &Manager{Store: NewStore(NewMemStorage()), Network: "regtest"}
+	sw := &Swap{ID: "abcdef0123456722", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		Zenon: ZenonLeg{PeerAddress: other, HtlcID: "9f", Verified: true}}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := m.SetZenonTerms(sw.ID, "not-an-address", "", ""); err == nil {
+		t.Error("an unparseable address was accepted")
+	}
+	if _, err := m.SetZenonTerms(sw.ID, "", "", "10\nprintf PWNED"); err == nil {
+		t.Error("a non-canonical amount was accepted")
+	}
+	got, err := m.SetZenonTerms(sw.ID, mine, "", "10")
+	if err != nil {
+		t.Fatalf("filling blanks: %v", err)
+	}
+	if got.Zenon.SelfAddress != mine || got.Zenon.AmountDisplay != "10" {
+		t.Errorf("blanks not filled: %+v", got.Zenon)
+	}
+	if got.Zenon.Verified {
+		t.Error("the leg stayed verified after its terms changed")
+	}
+	if _, err := m.SetZenonTerms(sw.ID, other, "", ""); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("an agreed address was changed: %v", err)
+	}
+	if _, err := m.SetZenonTerms(sw.ID, "", mine, ""); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("the counterparty's agreed address was changed: %v", err)
+	}
+	if _, err := m.SetZenonTerms(sw.ID, "", "", "11"); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("the agreed amount was changed: %v", err)
+	}
+	// Resubmitting what is already there is not a change.
+	if _, err := m.SetZenonTerms(sw.ID, mine, other, "10"); err != nil {
+		t.Errorf("resubmitting the same terms was refused: %v", err)
+	}
+}

@@ -831,6 +831,25 @@ ok(
   zenonFirst.fundingCommitted === true && !zenonFirst.fundingCommitBlocker,
   JSON.stringify([zenonFirst.fundingCommitted, zenonFirst.fundingCommitBlocker]),
 )
+section('the Zenon terms a swap was created without can be completed, once')
+
+// The participant above was created with no Zenon address of its own and no
+// amount, which the form allows. Verification refuses until they are there;
+// this is how they get there, and once there they do not move.
+const MINE = 'z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d'
+const OTHER = 'z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s'
+const badAddr = await call('zenonTerms', {id: receiver.id, selfAddress: 'z1notanaddress'})
+ok('an unparseable address is refused', /Zenon address/.test(badAddr.error ?? ''), badAddr.error)
+const badAmt = await call('zenonTerms', {id: receiver.id, amount: '10\nprintf PWNED'})
+ok('a non-decimal amount is refused', /plain decimal/.test(badAmt.error ?? ''), badAmt.error)
+const termed = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, amount: '10'})
+ok('blank terms are filled in', termed.zenon?.selfAddress === MINE && termed.zenon?.amountDisplay === '10', termed.error)
+const moved = await call('zenonTerms', {id: receiver.id, selfAddress: OTHER})
+ok('an agreed address cannot be changed', /cannot be changed/.test(moved.error ?? ''), moved.error)
+const same = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, amount: '10'})
+ok('resubmitting the same terms is not a change', !same.error && same.zenon?.selfAddress === MINE, same.error)
+const stray = await call('zenonTerms', {id: receiver.id, token: 'zts1xyz'})
+ok('a field this call does not take is refused', Boolean(stray.error), JSON.stringify(stray).slice(0, 80))
 
 section('the boundary refuses what it does not understand')
 
