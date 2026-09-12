@@ -48,6 +48,7 @@ import {useUnisat} from '@/core/composables/useUnisat'
 import {useUnlockCost} from '@/core/composables/useUnlockCost'
 import {useSession} from '@/core/composables/useSession'
 import {useCliCommands} from '@/core/composables/useCliCommands'
+import {useZenonWallet} from '@/core/composables/useZenonWallet'
 import {useAutoMode} from '@/core/composables/useAutoMode'
 import type {HandoffType} from '@/core/handoffs'
 import type {Swap, WalletAction} from '@/types'
@@ -568,6 +569,50 @@ async function zenonDone(action: WalletAction) {
  * counterparty's id arrives, and that must always override.
  */
 const htlcToVerify = computed(() => htlcIn.value.trim() || props.swap.zenon?.htlcId || '')
+
+/**
+ * The Zenon terms this swap is missing, and so cannot verify an HTLC against.
+ *
+ * The addresses are optional at creation because they are routinely filled in
+ * later; verification is where they stop being optional. An expectation left
+ * blank is not a check switched off but a check with no answer -- an HTLC
+ * paying anybody at all would pass it -- so Go refuses to verify until these
+ * are on the swap, and this form is how they get there. Each can be set once
+ * and never changed: they are terms of the trade.
+ */
+const zenonWallet = useZenonWallet()
+const TERM_LABELS = {
+  selfAddress: 'your Zenon address',
+  peerAddress: "the counterparty's Zenon address",
+  amount: 'the agreed Zenon amount',
+} as const
+// Read off the swap view, where Go decided it, rather than from the fields:
+// the engine's rule is what refuses to verify, and a form that read the
+// fields itself would leave a record the engine calls incomplete -- a zero
+// amount -- looking complete here, with no way to repair it.
+const missingZenonTerms = computed(() =>
+  (props.swap.missingZenonTerms ?? []).map((t) => ({key: t.key, label: TERM_LABELS[t.key]})),
+)
+const termIn = ref({selfAddress: '', peerAddress: '', amount: ''})
+const termsReady = computed(() =>
+  missingZenonTerms.value.every((t) => termIn.value[t.key].trim() !== ''),
+)
+function useWalletAddress() {
+  if (zenonWallet.address.value) termIn.value.selfAddress = zenonWallet.address.value
+}
+async function saveZenonTerms() {
+  await run(() =>
+    api.zenonTerms(
+      props.swap.id,
+      {
+        selfAddress: termIn.value.selfAddress.trim() || undefined,
+        peerAddress: termIn.value.peerAddress.trim() || undefined,
+        amount: termIn.value.amount.trim() || undefined,
+      },
+      settings.value,
+    ),
+  )
+}
 
 async function verifyZenon() {
   error.value = ''
@@ -1389,6 +1434,64 @@ async function downloadRecovery() {
              the leg has an open question. A verified HTLC has none: the row
              disappears and the badge in the summary above carries the verdict
              from then on. -->
+        <!-- Terms the swap was created without. Verification refuses until they
+             are here, and says so; this is the way in, ahead of the Verify row
+             it unblocks. -->
+        <div
+          v-if="live && !swap.zenon?.verified && missingZenonTerms.length"
+          class="grid gap-2 rounded-md border border-warning/40 bg-warning/5 p-3"
+        >
+          <p class="text-sm text-warning">
+            The Zenon HTLC cannot be verified yet: a check with nothing to compare against would
+            pass an HTLC that pays anybody. Missing here:
+            {{ (swap.missingZenonTerms ?? []).map((t) => t.reason).join('; ') }}. Each is a term of
+            the trade and cannot be changed once added.
+          </p>
+          <template v-for="t in missingZenonTerms" :key="t.key">
+            <div v-if="t.key === 'selfAddress'" class="flex min-w-0 flex-wrap gap-2">
+              <Input
+                v-model="termIn.selfAddress"
+                spellcheck="false"
+                autocapitalize="none"
+                autocomplete="off"
+                placeholder="your Zenon address (z1…), where their HTLC pays you"
+                class="min-w-56 flex-1 font-mono"
+              />
+              <Button
+                v-if="zenonWallet.connected.value && zenonWallet.address.value"
+                variant="outline"
+                @click="useWalletAddress"
+              >
+                Use the connected wallet's address
+              </Button>
+            </div>
+            <Input
+              v-else-if="t.key === 'peerAddress'"
+              v-model="termIn.peerAddress"
+              spellcheck="false"
+              autocapitalize="none"
+              autocomplete="off"
+              placeholder="the counterparty's Zenon address (z1…), which your HTLC pays"
+              class="font-mono"
+            />
+            <Input
+              v-else
+              v-model="termIn.amount"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="the agreed Zenon amount, e.g. 10 or 1.25"
+              class="font-mono"
+            />
+          </template>
+          <Button
+            class="justify-self-start"
+            :disabled="busy || !termsReady"
+            @click="saveZenonTerms"
+          >
+            Add to the swap
+          </Button>
+        </div>
+
         <template v-if="needsVerify">
           <p v-if="!hasZenon" class="flex items-start gap-1.5 text-sm text-warning">
             <span class="min-w-0 flex-1">

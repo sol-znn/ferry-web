@@ -454,6 +454,80 @@ func (s *Swap) FundingCommitBlocker() string {
 // waited on at all.
 func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
 
+// MissingZenonTerms lists the terms of the Zenon leg this swap never recorded
+// and so cannot check an HTLC against: the address the HTLC must pay (this
+// user's own for an incoming HTLC, the counterparty's for one this user
+// creates) and the agreed amount. The addresses and the amount are optional at
+// creation because they are routinely filled in later; they are not optional
+// for a verdict. An expectation left blank is not a check switched off but a
+// check with no answer -- an HTLC paying anybody at all would pass it -- so
+// every route to `verified` refuses while this is non-empty, a verdict stored
+// by an earlier release against incomplete terms is withdrawn on load, and
+// planUnlock will not pack the preimage over one.
+func (s *Swap) MissingZenonTerms() []MissingTerm {
+	var missing []MissingTerm
+	if s.ZenonHtlcIsOurs() {
+		if strings.TrimSpace(s.Zenon.PeerAddress) == "" {
+			missing = append(missing, MissingTerm{"peerAddress",
+				"this swap records no Zenon address for the counterparty, the one your HTLC must pay"})
+		}
+	} else if strings.TrimSpace(s.Zenon.SelfAddress) == "" {
+		missing = append(missing, MissingTerm{"selfAddress",
+			"this swap records no Zenon address of your own, the one their HTLC must pay"})
+	}
+	amount := strings.TrimSpace(s.Zenon.AmountDisplay)
+	switch {
+	case amount == "":
+		missing = append(missing, MissingTerm{"amount", "this swap records no agreed Zenon amount"})
+	case zeroAmount(amount):
+		// A lower bound of zero is no lower bound: one base unit would pass it.
+		missing = append(missing, MissingTerm{"amount", "this swap's agreed Zenon amount is zero"})
+	}
+	return missing
+}
+
+// MissingTerm is one term of the Zenon leg a swap never recorded: which field,
+// so the card can offer the right input, and why, so a refusal can say.
+type MissingTerm struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
+// missingReasons is the reasons alone, for a message.
+func missingReasons(ms []MissingTerm) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.Reason)
+	}
+	return out
+}
+
+// zeroAmount reports whether a plain-decimal amount is nothing at all.
+func zeroAmount(s string) bool { return strings.Trim(s, "0.") == "" }
+
+// withdrawStaleVerdict takes back a `verified` that was reached against
+// incomplete terms. The release that had this finding could persist such a
+// verdict, and a record survives an upgrade in localStorage and in a backup;
+// the flag is what planUnlock trusts, so it cannot be allowed to outlive the
+// rule. Applied on every load, idempotently, and said once in the log.
+func (s *Swap) withdrawStaleVerdict() {
+	if !s.Zenon.Verified {
+		return
+	}
+	missing := s.MissingZenonTerms()
+	if len(missing) == 0 {
+		return
+	}
+	s.Zenon.Verified = false
+	s.Zenon.VerifyPending = false
+	s.Zenon.VerifyError = "verified by an earlier release against incomplete terms: " +
+		strings.Join(missingReasons(missing), "; ") + ". Add them to the swap and verify again"
+	msg := "withdrew a verification reached against incomplete terms; the HTLC must be verified again"
+	if !loggedOnce(s, msg) {
+		s.log("%s", msg)
+	}
+}
+
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of
 // ZenonLegIsInitiators: exactly one leg of a swap is the initiator's.
@@ -643,6 +717,9 @@ func DecodeOffer(s string) (*Offer, error) {
 	}
 	if err := canonicalZenonAmount(o.ZenonAmt); err != nil {
 		return nil, fmt.Errorf("offer's %w", err)
+	}
+	if o.ZenonAmt != "" && zeroAmount(o.ZenonAmt) {
+		return nil, errors.New("offer's Zenon amount is zero, which is not an amount")
 	}
 	return &o, nil
 }

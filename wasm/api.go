@@ -122,6 +122,12 @@ type swapView struct {
 	// planCreate's refusal are one rule.
 	FundingCommitted     bool   `json:"fundingCommitted"`
 	FundingCommitBlocker string `json:"fundingCommitBlocker,omitempty"`
+	// MissingZenonTerms are the terms of the Zenon leg this swap never recorded
+	// and so cannot verify an HTLC against -- the card's form is built from
+	// this rather than from its own reading of the fields, so it and the
+	// engine cannot disagree about what counts as missing (a zero amount
+	// does).
+	MissingZenonTerms []MissingTerm `json:"missingZenonTerms,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -177,6 +183,7 @@ func view(sw *Swap) *swapView {
 		RedeemHeldForShortFunding: sw.RedeemHeldForShortFunding(),
 		FundingCommitted:          sw.FundingCommitted(),
 		FundingCommitBlocker:      sw.FundingCommitBlocker(),
+		MissingZenonTerms:         sw.MissingZenonTerms(),
 		Funding:                   sw.Funding,
 		FundingBroadcast:          sw.FundingBroadcast,
 		RefundTx:                  sw.RefundTx,
@@ -314,6 +321,7 @@ func init() {
 		"walletSent":   handleWalletSent,
 		"fundingCheck": handleFundingCheck,
 		"secret":       handleSetSecret,
+		"zenonTerms":   handleZenonTerms,
 		"archive":      handleArchive,
 		"delete":       handleDelete,
 		"offer":        handleOffer,
@@ -656,6 +664,35 @@ func handleZenonFind(ctx context.Context, a *API, body []byte) (any, error) {
 		resp["error"] = verr.Error()
 	}
 	return resp, nil
+}
+
+// zenonTerms completes the Zenon terms a swap was created without. Blank
+// fields are left alone; a field that is already recorded refuses a different
+// value. See Manager.SetZenonTerms.
+func handleZenonTerms(ctx context.Context, a *API, body []byte) (any, error) {
+	var req struct {
+		ID          string   `json:"id"`
+		SelfAddress string   `json:"selfAddress"`
+		PeerAddress string   `json:"peerAddress"`
+		Amount      string   `json:"amount"`
+		Settings    Settings `json:"settings"`
+	}
+	type termsReq = struct {
+		ID          string   `json:"id"`
+		SelfAddress string   `json:"selfAddress"`
+		PeerAddress string   `json:"peerAddress"`
+		Amount      string   `json:"amount"`
+		Settings    Settings `json:"settings"`
+	}
+	mgr, err := withManager(a, body, (*termsReq)(&req), func(r *termsReq) Settings { return r.Settings })
+	if err != nil {
+		return nil, err
+	}
+	sw, err := mgr.SetZenonTerms(ctx, req.ID, req.SelfAddress, req.PeerAddress, req.Amount)
+	if err != nil {
+		return nil, err
+	}
+	return view(sw), nil
 }
 
 func handleSetSecret(_ context.Context, a *API, body []byte) (any, error) {

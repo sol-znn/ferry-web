@@ -337,3 +337,404 @@ func TestAnUnansweredCheckLeavesTheLegPending(t *testing.T) {
 		}
 	})
 }
+
+// A term the swap never recorded is not a check switched off; it is a check
+// that cannot run, and a check that cannot run must not read as one that
+// passed. This is the finding: an HTLC paying the counterparty's own address
+// verified clean on a swap created without an address of its own, and the
+// unlock that followed published the preimage for it.
+func TestVerifyRefusesTermsThatWereNeverAgreed(t *testing.T) {
+	c := &znn.Client{}
+	info := &znn.HtlcInfo{
+		HashLocked: "z1attacker", TimeLocked: "z1them",
+		HashType: znn.HashTypeSHA256, KeyMaxSize: 32,
+		Amount: "1000000000", TokenStandard: znn.ZnnTokenStandard,
+	}
+	err := c.Verify(info, znn.VerifyParams{
+		ExpectTokenStandard: znn.ZnnTokenStandard,
+		MissingTerms:        []string{"this swap records no Zenon address of your own"},
+	})
+	if err == nil {
+		t.Fatal("an HTLC verified with no recipient to check it against")
+	}
+	if !strings.Contains(err.Error(), "no Zenon address of your own") {
+		t.Errorf("the refusal does not name the missing term: %v", err)
+	}
+	if znn.CheckIncomplete(err) {
+		t.Error("a term nobody agreed was recorded as a check to ask the node about again")
+	}
+}
+
+// zenonStubNode is a Zenon node that knows one HTLC entry, described by
+// `entry` each time it is asked, and one token with the given decimals.
+func zenonStubNode(t *testing.T, entry func() map[string]any, decimals int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reply := func(result any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		}
+		switch req.Method {
+		case "ledger.getFrontierMomentum":
+			reply(map[string]any{"height": 30000, "timestamp": time.Now().Unix()})
+		case "embedded.htlc.getById":
+			reply(entry())
+		case "embedded.token.getByZts":
+			reply(map[string]any{"name": "Zenon", "symbol": "ZNN",
+				"tokenStandard": znn.ZnnTokenStandard, "decimals": decimals})
+		default:
+			http.Error(w, "unexpected method "+req.Method, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+const (
+	f03Mine     = "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d"
+	f03Attacker = "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s"
+	f03HtlcID   = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+)
+
+// An entry that matches every term but the payee, which is whatever paysTo says.
+func f03Entry(hash []byte, paysTo *string) func() map[string]any {
+	return func() map[string]any {
+		return map[string]any{
+			"id": f03HtlcID, "timeLocked": f03Attacker, "hashLocked": *paysTo,
+			"tokenStandard": znn.ZnnTokenStandard, "amount": "1000000000",
+			"expirationTime": time.Now().Add(20 * time.Hour).Unix(),
+			"hashType":       znn.HashTypeSHA256, "keyMaxSize": 32,
+			"hashLock": base64.StdEncoding.EncodeToString(hash),
+		}
+	}
+}
+
+// The same thing through the manager, against a node: the counterparty's HTLC
+// matches every term this swap recorded -- hashlock, token, amount, expiry --
+// and pays THEM. With no address of this user's own on the swap, it must be
+// refused, not pending; once the address is added it must be refused by name;
+// and an HTLC that pays this user must then verify.
+func TestIncomingHtlcNeedsARecipientAndAnAmount(t *testing.T) {
+	hash := bytes.Repeat([]byte{0xab}, 32)
+	paysTo := f03Attacker
+	node := zenonStubNode(t, f03Entry(hash, &paysTo), 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	// The Bitcoin initiator who receives ZNN: the counterparty's HTLC is the
+	// incoming one, and it has to pay this user. Created without a Zenon
+	// address of their own, which the form allows.
+	sw := &Swap{
+		ID: "abcdef0123456700", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon:    ZenonLeg{PeerAddress: f03Attacker, AmountDisplay: "10"},
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, _, err := m.VerifyZenon(t.Context(), sw.ID, f03HtlcID)
+	if err == nil {
+		t.Fatal("an HTLC paying the counterparty verified on a swap with no address of its own")
+	}
+	if !strings.Contains(err.Error(), "no Zenon address of your own") {
+		t.Errorf("the refusal does not say what is missing: %v", err)
+	}
+	if got.Zenon.Verified || got.Zenon.VerifyPending {
+		t.Errorf("verified=%v pending=%v after a refusal for a missing term; want neither",
+			got.Zenon.Verified, got.Zenon.VerifyPending)
+	}
+
+	// The address is added. It cannot be adopted from what the entry pays --
+	// that is the attacker's -- so it comes from the user, and the HTLC is now
+	// refused by name.
+	if _, err := m.SetZenonTerms(t.Context(), sw.ID, f03Mine, "", ""); err != nil {
+		t.Fatalf("SetZenonTerms: %v", err)
+	}
+	_, _, err = m.VerifyZenon(t.Context(), sw.ID, f03HtlcID)
+	if err == nil || !strings.Contains(err.Error(), "hashLocked address is "+f03Attacker) {
+		t.Errorf("an HTLC paying the attacker was not refused by name: %v", err)
+	}
+
+	// An HTLC that pays this user, with every term on the swap: verified.
+	paysTo = f03Mine
+	got, _, err = m.VerifyZenon(t.Context(), sw.ID, f03HtlcID)
+	if err != nil {
+		t.Fatalf("an HTLC paying this user on a complete swap was refused: %v", err)
+	}
+	if !got.Zenon.Verified {
+		t.Error("verified flag not set")
+	}
+
+	// With the amount blank, or zero, the same HTLC is refused for that.
+	for _, amount := range []string{"", "0", "0.00"} {
+		noAmount := &Swap{
+			ID: "abcdef0123456711", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+			State: StateFunded, SecretHash: hash, AmountSats: 400_000,
+			LockTime: time.Now().Add(48 * time.Hour).Unix(),
+			Zenon:    ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: amount},
+		}
+		if err := m.Store.Save(noAmount); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		got, _, err = m.VerifyZenon(t.Context(), noAmount.ID, f03HtlcID)
+		if err == nil || !strings.Contains(err.Error(), "Zenon amount") {
+			t.Errorf("amount %q: an HTLC verified anyway: %v", amount, err)
+		}
+		if got != nil && got.Zenon.VerifyPending {
+			t.Errorf("amount %q: recorded as pending rather than refused", amount)
+		}
+	}
+}
+
+// The other direction: this user created the HTLC and it must pay the
+// counterparty. With no counterparty address recorded there is nothing to hold
+// it to, and a verdict would release the id over a session as verified.
+func TestOwnHtlcNeedsTheCounterpartysAddress(t *testing.T) {
+	hash := bytes.Repeat([]byte{0xab}, 32)
+	paysTo := f03Attacker
+	node := zenonStubNode(t, f03Entry(hash, &paysTo), 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	sw := &Swap{
+		ID: "abcdef0123456733", Network: "regtest", Role: RoleInitiator, Leg: LegReceive,
+		SecretHash: hash, Zenon: ZenonLeg{SelfAddress: f03Mine, AmountDisplay: "10"},
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, _, err := m.VerifyZenon(t.Context(), sw.ID, f03HtlcID)
+	if err == nil || !strings.Contains(err.Error(), "no Zenon address for the counterparty") {
+		t.Errorf("an own HTLC verified with no counterparty address: %v", err)
+	}
+	if got != nil && (got.Zenon.Verified || got.Zenon.VerifyPending) {
+		t.Error("refused, but recorded as verified or pending")
+	}
+}
+
+// A verdict stored by the release that had this finding survives an upgrade in
+// localStorage and in a backup, and `verified` is what the unlock trusts. So it
+// is withdrawn on load, the unlock refuses over missing terms regardless, and
+// even a complete, verified record is checked against the node again before
+// the preimage goes into a block.
+func TestStaleVerdictsDoNotUnlock(t *testing.T) {
+	// A real secret and its hash: a backup import checks that they agree.
+	secret, hash, err := NewSecret()
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	paysTo := f03Attacker
+	node := zenonStubNode(t, f03Entry(hash, &paysTo), 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+
+	// What the old release could have written: verified, with no own address.
+	stale := &Swap{
+		ID: "abcdef0123456744", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, Key: mustKey(t), Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon: ZenonLeg{PeerAddress: f03Attacker, AmountDisplay: "10", HtlcID: f03HtlcID,
+			Verified: true},
+	}
+	if err := m.Store.Save(stale); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := m.Store.Load(stale.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Zenon.Verified || loaded.Zenon.VerifyPending {
+		t.Error("a verdict reached against incomplete terms survived a load")
+	}
+	if !strings.Contains(loaded.Zenon.VerifyError, "earlier release") {
+		t.Errorf("the withdrawal is not explained: %q", loaded.Zenon.VerifyError)
+	}
+	// The same record through a backup.
+	backup, err := m.Store.Export()
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	fresh := &Manager{Store: NewStore(NewMemStorage()), Znn: m.Znn, Network: "regtest"}
+	if _, _, _, err := fresh.Store.Import(backup); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	imported, err := fresh.Store.Load(stale.ID)
+	if err != nil {
+		t.Fatalf("Load after import: %v", err)
+	}
+	if imported.Zenon.Verified {
+		t.Error("a stale verdict survived export and import")
+	}
+
+	// planUnlock, handed the record as the old release left it in memory:
+	// refused over the missing term before anything else.
+	plan := &walletBlockPlan{Block: newWalletBlock(69, f03Mine)}
+	err = planUnlock(t.Context(), m, stale, f03Mine, plan)
+	if err == nil || !strings.Contains(err.Error(), "no Zenon address of your own") {
+		t.Errorf("an unlock was planned over a missing term: %v", err)
+	}
+	if plan.Block.Data != "" {
+		t.Error("the preimage was packed into the block")
+	}
+
+	// A complete record whose stored verdict is stale in the other way: the
+	// entry has changed since. Verified says yes; the node, asked again, says
+	// the HTLC pays the attacker.
+	complete := &Swap{
+		ID: "abcdef0123456755", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, Key: mustKey(t), Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon: ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: "10",
+			HtlcID: f03HtlcID, Verified: true},
+	}
+	plan = &walletBlockPlan{Block: newWalletBlock(69, f03Mine)}
+	err = planUnlock(t.Context(), m, complete, f03Mine, plan)
+	if err == nil || !strings.Contains(err.Error(), "does not pass verification now") {
+		t.Errorf("an unlock was planned on a stale verified flag: %v", err)
+	}
+	if plan.Block.Data != "" {
+		t.Error("the preimage was packed into the block")
+	}
+	// And once the entry really pays this user, the unlock is planned.
+	paysTo = f03Mine
+	plan = &walletBlockPlan{Block: newWalletBlock(69, f03Mine)}
+	if err := planUnlock(t.Context(), m, complete, f03Mine, plan); err != nil {
+		t.Fatalf("a good unlock was refused: %v", err)
+	}
+	if plan.Block.Data == "" {
+		t.Error("no data in the unlock block")
+	}
+}
+
+// Terms are filled in where blank and never changed where not: a term that can
+// be edited after the fact is one that can be edited to match whatever the
+// counterparty locked. Filling one in un-verifies the leg. An amount is
+// checked against the token before it becomes immutable.
+func TestZenonTermsFillBlanksOnly(t *testing.T) {
+	node := zenonStubNode(t, func() map[string]any { return nil }, 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	sw := &Swap{ID: "abcdef0123456722", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		Zenon: ZenonLeg{PeerAddress: f03Attacker, HtlcID: "9f", Verified: true}}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	ctx := t.Context()
+	if _, err := m.SetZenonTerms(ctx, sw.ID, "not-an-address", "", ""); err == nil {
+		t.Error("an unparseable address was accepted")
+	}
+	for _, bad := range []string{"10\nprintf PWNED", "0", "00.0", "1e3"} {
+		if _, err := m.SetZenonTerms(ctx, sw.ID, "", "", bad); err == nil {
+			t.Errorf("amount %q was accepted", bad)
+		}
+	}
+	// More decimal places than the token has.
+	if _, err := m.SetZenonTerms(ctx, sw.ID, "", "", "1.123456789"); err == nil ||
+		!strings.Contains(err.Error(), "decimal places") {
+		t.Errorf("an amount the token cannot represent was accepted: %v", err)
+	}
+	// No node: the precision cannot be checked, so the amount is refused.
+	noNode := &Manager{Store: m.Store, Network: "regtest"}
+	if _, err := noNode.SetZenonTerms(ctx, sw.ID, "", "", "10"); err == nil ||
+		!strings.Contains(err.Error(), "Zenon node") {
+		t.Errorf("an amount was recorded with no node to check it against: %v", err)
+	}
+	got, err := m.SetZenonTerms(ctx, sw.ID, f03Mine, "", "10")
+	if err != nil {
+		t.Fatalf("filling blanks: %v", err)
+	}
+	if got.Zenon.SelfAddress != f03Mine || got.Zenon.AmountDisplay != "10" {
+		t.Errorf("blanks not filled: %+v", got.Zenon)
+	}
+	if got.Zenon.Verified {
+		t.Error("the leg stayed verified after its terms changed")
+	}
+	if _, err := m.SetZenonTerms(ctx, sw.ID, f03Attacker, "", ""); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("an agreed address was changed: %v", err)
+	}
+	if _, err := m.SetZenonTerms(ctx, sw.ID, "", f03Mine, ""); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("the counterparty's agreed address was changed: %v", err)
+	}
+	if _, err := m.SetZenonTerms(ctx, sw.ID, "", "", "11"); err == nil ||
+		!strings.Contains(err.Error(), "cannot be changed") {
+		t.Errorf("the agreed amount was changed: %v", err)
+	}
+	// Resubmitting what is already there is not a change.
+	if _, err := m.SetZenonTerms(ctx, sw.ID, f03Mine, f03Attacker, "10"); err != nil {
+		t.Errorf("resubmitting the same terms was refused: %v", err)
+	}
+}
+
+// The nit from review: an HTLC the node cannot answer for leaves the block
+// empty. And a zero recorded before the rule is repairable, not stuck.
+func TestUnlockLookupFailureAndZeroRepair(t *testing.T) {
+	secret, hash, err := NewSecret()
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	// A node with no such entry.
+	node := zenonStubNode(t, func() map[string]any { return nil }, 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	sw := &Swap{
+		ID: "abcdef0123456766", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, Key: mustKey(t), Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon: ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: "10",
+			HtlcID: f03HtlcID, Verified: true},
+	}
+	plan := &walletBlockPlan{Block: newWalletBlock(69, f03Mine)}
+	if err := planUnlock(t.Context(), m, sw, f03Mine, plan); err == nil ||
+		!strings.Contains(err.Error(), "could not re-read") {
+		t.Errorf("an unlock was planned though the entry could not be read: %v", err)
+	}
+	if plan.Block.Data != "" {
+		t.Error("the preimage was packed into the block")
+	}
+
+	// A zero amount, as an older record could hold it: missing, withdrawn on
+	// load, and replaceable -- the one way an agreed term may move, because
+	// zero was never a term.
+	zero := &Swap{ID: "abcdef0123456777", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		Key: mustKey(t), SecretHash: hash,
+		Zenon: ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: "0.00",
+			HtlcID: f03HtlcID, Verified: true}}
+	if err := m.Store.Save(zero); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := m.Store.Load(zero.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Zenon.Verified {
+		t.Error("a verdict over a zero amount survived a load")
+	}
+	if ms := loaded.MissingZenonTerms(); len(ms) != 1 || ms[0].Key != "amount" {
+		t.Errorf("a zero amount is not reported as the missing term: %+v", ms)
+	}
+	got, err := m.SetZenonTerms(t.Context(), zero.ID, "", "", "10")
+	if err != nil {
+		t.Fatalf("a zero amount could not be repaired: %v", err)
+	}
+	if got.Zenon.AmountDisplay != "10" || len(got.MissingZenonTerms()) != 0 {
+		t.Errorf("repair did not take: %+v", got.Zenon)
+	}
+
+	// And zero is refused at both doors it could come in by.
+	if _, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000,
+		DestAddr: regtestDest, ZenonAmount: "0"}); err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Errorf("a zero amount was accepted at create: %v", err)
+	}
+	offer := Offer{Version: 1, Network: "regtest", FromRole: RoleInitiator, BTCLeg: LegSend,
+		SecretHash: strings.Repeat("ab", 32), PKH: strings.Repeat("cd", 20), AmountSats: 400_000,
+		ZenonAmt: "00.0"}
+	enc, err := offer.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if _, err := DecodeOffer(enc); err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Errorf("a zero amount was accepted in an offer: %v", err)
+	}
+}

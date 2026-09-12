@@ -53,6 +53,11 @@ export interface KeyView {
 }
 
 /** The other half of the trade. This app reads Zenon state but never writes it. */
+export interface MissingZenonTerm {
+  key: 'selfAddress' | 'peerAddress' | 'amount'
+  reason: string
+}
+
 export interface ZenonLeg {
   htlcId?: string
   selfAddress?: string
@@ -153,6 +158,11 @@ export interface Swap {
    *  are one rule. */
   fundingCommitted: boolean
   fundingCommitBlocker?: string
+  /** Terms of the Zenon leg this swap never recorded, so no HTLC can verify
+   *  against it: which field, and why. The card's repair form is built from
+   *  this rather than from its own reading of the fields, so it and Go cannot
+   *  disagree about what counts as missing (a zero amount does). */
+  missingZenonTerms?: MissingZenonTerm[]
 
   funding?: FundingOutput
   refundTx?: SpendResult

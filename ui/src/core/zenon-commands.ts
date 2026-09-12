@@ -174,11 +174,29 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
     lines.push('# If the swap stalls, reclaim after expiry:')
     lines.push(`znn-cli htlc.reclaim ${sw.zenon?.htlcId || '<your htlc id>'}${cliFlags}`)
   } else {
-    // The counterparty sends ZNN, so they create the Zenon HTLC.
+    // The counterparty sends ZNN, so they create the Zenon HTLC, and this user
+    // unlocks it -- which publishes the preimage. The wallet button will not
+    // build that block until the HTLC has been verified against the agreed
+    // terms, and it reads the entry off the node again immediately before the
+    // preimage goes in. A command in a terminal passes through none of that,
+    // and a gate on the text that depends on a remembered verdict always has a
+    // moment where the verdict is stale. So the runnable line is not printed:
+    // the id is, as a comment, and the preimage stays on the card, where it is
+    // shown for exactly this purpose, rather than in a block somebody pastes.
     const id = sw.zenon?.htlcId || '<their htlc id>'
-    const preimage = sw.secretHex || '<preimage>'
-    lines.push('# The counterparty creates the Zenon HTLC. Verify it above before acting, then:')
-    lines.push(`znn-cli htlc.unlock ${id} ${preimage}${cliFlags}`)
+    lines.push(
+      ...comment(
+        'The counterparty creates the Zenon HTLC. Unlocking it publishes the preimage, ' +
+          'which is what lets them take the Bitcoin -- so it is only safe against an HTLC ' +
+          'that has passed verification, and this page will not print an unlock command: use ' +
+          'the wallet button above, which verifies the HTLC against the node before it builds ' +
+          'the block. If you must use znn-cli, press Verify HTLC above first and act only on ' +
+          'a green verdict; then htlc.unlock takes the id below and the preimage shown on the ' +
+          'card.',
+      ),
+    )
+    lines.push(...comment(`  htlc id    ${id}`))
+    lines.push('#   preimage   <the preimage shown on the card, once you hold it>')
     lines.push('')
     // The step people miss. Unlocking moves the funds to your address as an
     // unreceived block; on Zenon that is not the same as having them.

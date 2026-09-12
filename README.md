@@ -74,7 +74,8 @@ the wallet signs it, exactly as on the Bitcoin side.
   [znn-cli] commands are printed for anyone whose wallet is not that extension.
   See [docs/EXTENSION-WALLET.md](docs/EXTENSION-WALLET.md).
 - Verification is not a formality. Ferry refuses an HTLC that commits to the
-  wrong hash, pays the wrong party, **holds a token nobody agreed to**,
+  wrong hash, pays the wrong party **or a party this swap never named**,
+  **holds a token nobody agreed to**,
   underpays, is about to expire, or sits on the wrong side of the Bitcoin
   locktime for the role it is playing. Nor does it report a check it could not
   perform as one that passed: if the agreed amount cannot be converted into base

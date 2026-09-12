@@ -365,10 +365,32 @@ func planUnlock(ctx context.Context, mgr *Manager, sw *Swap, from string,
 	// which is the one secret that keeps both legs bound together — doing it
 	// against an HTLC nobody has checked hands the counterparty the Bitcoin leg
 	// for whatever the Zenon entry happens to contain.
+	if missing := sw.MissingZenonTerms(); len(missing) > 0 {
+		return fmt.Errorf("not unlocking: %s. An unlock publishes the preimage, and against an "+
+			"HTLC whose payee or amount this swap never recorded that is handing the counterparty "+
+			"your Bitcoin for whatever the entry happens to hold. Add the missing terms to the "+
+			"swap and verify the HTLC first", strings.Join(missingReasons(missing), "; "))
+	}
 	if !sw.Zenon.Verified {
 		return errors.New("this swap's Zenon HTLC has not passed verification. Unlocking " +
 			"publishes the preimage, which is what lets the counterparty take your Bitcoin — so " +
 			"check the HTLC really holds the agreed token, amount and expiry first")
+	}
+	// The stored verdict is as old as the last check, and a record can carry
+	// one from a release with a laxer rule. So the entry is read again now and
+	// held to today's expectations, immediately before the preimage is packed
+	// into something a wallet will sign. A node that cannot answer is a
+	// refusal.
+	info, err := mgr.Znn.GetHtlcByID(ctx, htlcID)
+	if err != nil {
+		return fmt.Errorf("could not re-read HTLC %s before unlocking it, so it cannot be "+
+			"confirmed to still match the agreed terms: %w", htlcID, err)
+	}
+	want := mgr.zenonExpectations(ctx, sw)
+	want.ExpectID = htlcID
+	if err := mgr.Znn.Verify(info, want); err != nil {
+		return fmt.Errorf("HTLC %s does not pass verification now, so nothing is unlocked: %w",
+			htlcID, err)
 	}
 	id, err := hex.DecodeString(htlcID)
 	if err != nil {

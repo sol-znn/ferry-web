@@ -164,6 +164,18 @@ export const api = {
 
   setSecret: (id: string, secretHex: string) => wasmCall<Swap>('secret', {id, secretHex}),
 
+  /**
+   * Complete the Zenon terms a swap was created without: this user's own
+   * address, the counterparty's, the agreed amount. Blank fields are left
+   * alone; a field already recorded refuses a different value, because these
+   * are terms of the trade. Filling one in un-verifies the leg.
+   */
+  zenonTerms: (
+    id: string,
+    terms: {selfAddress?: string; peerAddress?: string; amount?: string},
+    settings: Settings,
+  ) => wasmCall<Swap>('zenonTerms', {id, ...terms, settings}),
+
   archive: (id: string, archived: boolean) => wasmCall<Swap>('archive', {id, archived}),
 
   /**

@@ -354,6 +354,15 @@ type VerifyParams struct {
 	// MinAmount, when set, is the smallest acceptable amount in the token's
 	// base units.
 	MinAmount *big.Int
+	// MissingTerms lists terms of the trade this swap never recorded -- the
+	// address the HTLC must pay, the amount it must hold -- and so cannot check.
+	// Each is a REFUSAL. An expectation left blank used to switch its check
+	// off, and a check switched off reads exactly like a check that passed:
+	// an HTLC paying the counterparty's own address verified clean on a swap
+	// that had no address of its own to compare against. These are not
+	// pending either: no node answering later can supply a term the user
+	// never agreed.
+	MissingTerms []string
 	// AmountUncheckable, when set, is why the agreed amount could not be turned
 	// into base units -- the token metadata was unreachable, or the agreed
 	// figure could not be parsed. It is a REFUSAL, not a note: an amount that
@@ -416,6 +425,13 @@ func (c *Client) Verify(info *HtlcInfo, want VerifyParams) error {
 	// checks are written in.
 	incomplete := 0
 
+	// Terms the swap never recorded come first: nothing below can stand in for
+	// them, and a verdict reached without them is not a verdict.
+	for _, term := range want.MissingTerms {
+		problems = append(problems, fmt.Sprintf(
+			"%s, so that part of the HTLC cannot be checked. A skipped check reads exactly like "+
+				"a passed one, so this is a refusal: add it to the swap and verify again", term))
+	}
 	if want.ExpectID != "" && !strings.EqualFold(strings.TrimPrefix(info.ID, "0x"),
 		strings.TrimPrefix(want.ExpectID, "0x")) {
 		problems = append(problems, fmt.Sprintf(
