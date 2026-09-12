@@ -243,11 +243,45 @@ func (p BoardPost) validate() error {
 	if p.CreatedAt <= 0 || p.ExpiresAt <= 0 {
 		return errors.New("a board post needs a created and an expiry time")
 	}
+	if err := plausibleBoardTime(p.CreatedAt); err != nil {
+		return fmt.Errorf("that post's creation time %w", err)
+	}
+	if err := plausibleBoardTime(p.ExpiresAt); err != nil {
+		return fmt.Errorf("that post's expiry %w", err)
+	}
 	if p.ExpiresAt <= p.CreatedAt {
 		return errors.New("that post expires before it was written")
 	}
 	if p.Completed < 0 {
 		return errors.New("a completed count cannot be negative")
+	}
+	return nil
+}
+
+// A time on the board is a Unix timestamp chosen by whoever signed the
+// event, and a relay this browser was pointed at can deliver anything a key
+// will sign. Every one of them is read by a page that formats it, and a
+// JavaScript Date is only defined for about 273,000 years around 1970: a
+// value Go's int64 holds happily throws when the page tries to print it, and
+// a throw in a shared render takes every neighbouring row down with it. So a
+// time is admitted only inside a window nothing real falls outside of.
+const (
+	// boardTimeFloor is 2020-01-01T00:00:00Z. Nothing on this board predates
+	// the software.
+	boardTimeFloor = 1577836800
+	// boardTimeCeiling is 2100-01-01T00:00:00Z. A post may expire a year out;
+	// nothing needs a century, and this is far inside what a Date can hold.
+	boardTimeCeiling = 4102444800
+	// takeFuture is how far ahead of this reader's clock a take may be
+	// stamped and still be read: a clock a day wrong, not a stamp from 2099.
+	takeFuture = 24 * time.Hour
+)
+
+// plausibleBoardTime says whether t is a time this board could contain. The
+// error reads as a continuation of "that ...".
+func plausibleBoardTime(t int64) error {
+	if t < boardTimeFloor || t > boardTimeCeiling {
+		return fmt.Errorf("is %d, outside any time this board could hold", t)
 	}
 	return nil
 }
@@ -848,6 +882,16 @@ func OpenTake(identity *BoardIdentity, ev *NostrEvent) (*InboundTake, error) {
 	}
 	if p := tagValue(ev, "p"); !strings.EqualFold(p, identity.PubKey) {
 		return nil, errors.New("that take is addressed to somebody else")
+	}
+	// Judged before the box is opened: a stamp the page cannot print is a
+	// take the inbox cannot show, and one such take must not take the inbox
+	// down with it. The signature already proves the author chose the stamp.
+	if err := plausibleBoardTime(ev.CreatedAt); err != nil {
+		return nil, fmt.Errorf("that take's timestamp %w", err)
+	}
+	if ev.CreatedAt > time.Now().Add(takeFuture).Unix() {
+		return nil, fmt.Errorf("that take is stamped %s in the future, further than a clock "+
+			"could be wrong", (time.Duration(ev.CreatedAt-time.Now().Unix()) * time.Second).Truncate(time.Hour))
 	}
 	priv, err := identity.PrivKey()
 	if err != nil {

@@ -924,3 +924,68 @@ func TestBoardRefusesAnAddressThatIsNotProven(t *testing.T) {
 		}
 	})
 }
+
+// A take is stamped by whoever signed it, and a relay delivers whatever a key
+// will sign. A stamp the page cannot print is refused at the read boundary --
+// before the box is opened -- so one such take cannot take the inbox down
+// with it, and a stamp further ahead than a clock could be wrong is refused
+// the same way. A post's own times are held to the same window.
+func TestBoardTimesMustBePlausible(t *testing.T) {
+	maker, taker := testIdentity(t), testIdentity(t)
+	code, err := NewSessionCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	take := Take{Version: 1, PostID: "abcd1234", Code: code, AmountSats: 500_000}
+	takerPriv, err := taker.PrivKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamped := func(at int64) *NostrEvent {
+		t.Helper()
+		ev, err := SealTake(taker, maker.PubKey, take)
+		if err != nil {
+			t.Fatalf("SealTake: %v", err)
+		}
+		// Re-stamp and re-sign: the stamp is the author's, and a valid
+		// signature over an absurd one is exactly what a relay can deliver.
+		ev.CreatedAt = at
+		if err := signEvent(takerPriv, ev); err != nil {
+			t.Fatalf("signEvent: %v", err)
+		}
+		return ev
+	}
+	if _, err := OpenTake(maker, stamped(time.Now().Unix())); err != nil {
+		t.Fatalf("a take stamped now was refused: %v", err)
+	}
+	if _, err := OpenTake(maker, stamped(time.Now().Add(23*time.Hour).Unix())); err != nil {
+		t.Errorf("a take stamped a day ahead (a wrong clock) was refused: %v", err)
+	}
+	for name, at := range map[string]int64{
+		"beyond what a Date can hold": 1 << 50,
+		"the far future":              time.Now().Add(400 * 24 * time.Hour).Unix(),
+		"before the board existed":    1_000_000,
+		"negative":                    -1,
+		"two days ahead":              time.Now().Add(48 * time.Hour).Unix(),
+	} {
+		if _, err := OpenTake(maker, stamped(at)); err == nil {
+			t.Errorf("%s: a take stamped %d was opened", name, at)
+		}
+	}
+
+	post := samplePost("abcd1234")
+	post.CreatedAt, post.ExpiresAt = time.Now().Unix(), time.Now().Add(24*time.Hour).Unix()
+	if err := post.validate(); err != nil {
+		t.Errorf("a post with ordinary times was refused: %v", err)
+	}
+	huge := post
+	huge.ExpiresAt = 1 << 50
+	if err := huge.validate(); err == nil || !strings.Contains(err.Error(), "outside any time") {
+		t.Errorf("a post expiring beyond any Date was accepted: %v", err)
+	}
+	old := post
+	old.CreatedAt = 1_000_000
+	if err := old.validate(); err == nil || !strings.Contains(err.Error(), "outside any time") {
+		t.Errorf("a post created before the board existed was accepted: %v", err)
+	}
+}
