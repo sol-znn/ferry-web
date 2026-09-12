@@ -917,6 +917,20 @@ const auditedWrapped = await call('audit', {id: receiver2.id, contractHex: wrapp
 ok('the same terms in a non-canonical encoding are refused', /canonical/.test(auditedWrapped.error ?? ''), auditedWrapped.error ?? 'accepted')
 const kept = await call('get', {id: receiver2.id})
 ok('and the accepted contract is not displaced', kept.contractHex === canonicalHex, kept.contractHex)
+section('a contract already on the swap is answered, not re-applied')
+
+// A session resends values, and a re-sync says everything again. The same
+// contract bytes arriving twice are nothing new; the record does not grow an
+// event for each.
+{
+  const sender = await call('create', {role: 'initiator', leg: 'send', amountSats: 400000, destAddr: DEST, settings: SETTINGS})
+  const taker = await call('create', {role: 'participant', leg: 'receive', amountSats: 400000, destAddr: DEST, secretHashHex: sender.secretHashHex, settings: SETTINGS})
+  const forTaker = await call('counterparty', {id: sender.id, pkhHex: taker.key.pkhHex})
+  const once = await call('audit', {id: taker.id, contractHex: forTaker.contractHex})
+  const twice = await call('audit', {id: taker.id, contractHex: forTaker.contractHex})
+  ok('the first audit takes the contract', !once.error && once.contractHex === forTaker.contractHex, once.error)
+  ok('the second is the same swap back, with nothing added', !twice.error && twice.contractHex === forTaker.contractHex && twice.events.length === once.events.length, twice.error ?? `${once.events.length} -> ${twice.events.length}`)
+}
 
 section('the boundary refuses what it does not understand')
 

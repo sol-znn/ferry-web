@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/zenon/ferry-web/wasm/chain"
 	"github.com/zenon/ferry-web/wasm/znn"
 )
@@ -377,6 +378,18 @@ func (m *Manager) SetCounterpartyPKH(id, pkhHex string) (*Swap, error) {
 	if err != nil || len(pkh) != 20 {
 		return nil, errors.New("pubkey hash must be 20 bytes of hex")
 	}
+	// A resend of the hash already built into the contract is nothing new.
+	// A different one after the contract has been staked on would rebuild the
+	// contract under a funding that pays the old one, so it is refused.
+	if bytes.Equal(pkh, sw.CounterpartyPKH) && len(sw.Contract) > 0 {
+		return sw, nil
+	}
+	if committed, why := sw.ContractCommitted(); committed {
+		return nil, fmt.Errorf("the contract cannot change now: %s. It was built for their "+
+			"pubkey hash %s and a different one (%s) would build a different contract, at a "+
+			"different address, under the same funding. If the counterparty needs a different "+
+			"key, that is a new swap", why, hex.EncodeToString(sw.CounterpartyPKH), hex.EncodeToString(pkh))
+	}
 	sw.CounterpartyPKH = pkh
 	if err := sw.BuildSwapContract(); err != nil {
 		return nil, err
@@ -416,6 +429,31 @@ func (m *Manager) AuditContract(id, contractHex string) (*Swap, error) {
 	params, err := sw.Params()
 	if err != nil {
 		return nil, err
+	}
+
+	// The contract already on this swap is what its funding, its refund and
+	// its Zenon leg were committed against. The same bytes again -- a session
+	// resend, a re-sync, a second paste -- change nothing and are answered
+	// with the swap as it is. Different bytes after a commitment are refused,
+	// however well they audit: accepting them would leave the funding
+	// outpoint paying the old script while every spend is built for the new
+	// one. Before a commitment a re-audit still replaces, which is how a
+	// counterparty rebuilding with a better locktime gets a second chance.
+	if len(sw.Contract) > 0 {
+		if bytes.Equal(contract, sw.Contract) {
+			return sw, nil
+		}
+		if committed, why := sw.ContractCommitted(); committed {
+			return nil, fmt.Errorf("this swap's contract cannot change now: %s. A different "+
+				"contract arrived (%s, at %s) and was refused; the one already on the swap "+
+				"stays. If the counterparty has rebuilt the contract, treat that as a new swap",
+				why, hex.EncodeToString(contract[:8])+"…", func() string {
+					if a, aerr := ContractAddress(contract, params); aerr == nil {
+						return a.String()
+					}
+					return "an unknown address"
+				}())
+		}
 	}
 
 	if !bytes.Equal(details.PkhRedeem, sw.Key.PKH) {
@@ -567,6 +605,13 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 				// trackFundingDepth below fetches.
 				Confirmed:   best.Status.Confirmed,
 				BlockHeight: best.Status.BlockHeight,
+			}
+			// What the output pays, from the transaction itself. Best effort
+			// here -- a listing is not a transaction, and the fetch can fail --
+			// because signing is where it is required, and Redeem and Refund
+			// fill it in then if it is still missing.
+			if err := bindFunding(ctx, backend, sw, params); err != nil {
+				sw.log("could not read the funding transaction to record what it pays: %v", err)
 			}
 
 			// Only on a change: this block runs on every refresh while the
@@ -941,6 +986,51 @@ func payoutAddress(sw *Swap, asked string) (string, error) {
 	return sw.DestAddr, nil
 }
 
+// bindFunding records, from the funding transaction itself, the script and
+// value of the output this swap adopted, and refuses if that script is not
+// this swap's contract. The outpoint is the swap's; what it pays is the
+// chain's; and a contract that has been swapped out from under a funding --
+// a second contract over a session, a record edited by hand -- is caught here,
+// before a signature is made over a spend the network would refuse.
+//
+// Idempotent, and a no-op when the record already carries the script: then
+// the comparison alone runs, and needs no chain.
+func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *chaincfg.Params) error {
+	f := sw.Funding
+	if f == nil {
+		return nil
+	}
+	if f.PkScriptHex == "" {
+		raw, err := backend.RawTx(ctx, f.TxID)
+		if err != nil {
+			return fmt.Errorf("fetch funding transaction %s: %w", f.TxID, err)
+		}
+		tx, err := DecodeRawTx(raw)
+		if err != nil {
+			return fmt.Errorf("funding transaction %s: %w", f.TxID, err)
+		}
+		if int(f.Vout) >= len(tx.TxOut) {
+			return fmt.Errorf("funding transaction %s has no output %d", f.TxID, f.Vout)
+		}
+		out := tx.TxOut[f.Vout]
+		if out.Value != f.Value {
+			return fmt.Errorf("funding output %s:%d holds %d sat on the chain, not the %d sat "+
+				"this record says", f.TxID, f.Vout, out.Value, f.Value)
+		}
+		f.PkScriptHex = hex.EncodeToString(out.PkScript)
+	}
+	bound, err := f.bindsTo(sw.Contract, params)
+	if err != nil {
+		return err
+	}
+	if !bound {
+		return fmt.Errorf("the funding output %s:%d pays script %s, which is not this swap's "+
+			"contract %s. The contract on the record is not the one that was funded",
+			f.TxID, f.Vout, f.PkScriptHex, sw.ContractAddr)
+	}
+	return nil
+}
+
 // Redeem claims a contract by revealing the secret, then broadcasts it.
 func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error) {
 	backend := m.Chain
@@ -994,6 +1084,12 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	params, err := sw.Params()
 	if err != nil {
 		return nil, err
+	}
+	// The output being spent must be an output of THIS contract, as the chain
+	// says, not as the record does. A chain that cannot say is a refusal: a
+	// redeem is the transaction that publishes the secret.
+	if err := bindFunding(ctx, backend, sw, params); err != nil {
+		return nil, fmt.Errorf("not redeeming: %w", err)
 	}
 	feeRate, err := backend.FeeRate(ctx, 3)
 	if err != nil {
@@ -1054,6 +1150,9 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 		params, err := sw.Params()
 		if err != nil {
 			return nil, err
+		}
+		if err := bindFunding(ctx, backend, sw, params); err != nil {
+			return nil, fmt.Errorf("not refunding: %w", err)
 		}
 		feeRate, err := backend.FeeRate(ctx, 6)
 		if err != nil {

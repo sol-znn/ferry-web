@@ -526,6 +526,31 @@ func (s *Swap) withdrawStaleVerdict() {
 	if !loggedOnce(s, msg) {
 		s.log("%s", msg)
 	}
+// ContractCommitted reports whether anything has been staked on this swap's
+// Bitcoin contract as it stands -- money seen or sent to its address, a Zenon
+// HTLC created against its locktime, a refund pre-signed to spend its output
+// -- and says what. Past that point the contract's bytes are the swap's
+// identity: a "corrected" contract arriving afterwards, over a session or by
+// hand, would be stored beside a funding outpoint that still pays the OLD
+// script, and every spend built from then on would be for the wrong one. So
+// AuditContract and SetCounterpartyPKH treat a byte-identical resend as
+// nothing new and refuse anything else once this is true.
+func (s *Swap) ContractCommitted() (bool, string) {
+	switch {
+	case len(s.Contract) == 0:
+		return false, ""
+	case s.Funding != nil:
+		return true, "funding has been seen at its address"
+	case s.FundingBroadcast != nil:
+		return true, "a payment to its address has been sent from this browser"
+	case s.RefundTx != nil:
+		return true, "a refund of it has been pre-signed"
+	case strings.TrimSpace(s.Zenon.HtlcID) != "":
+		return true, "a Zenon HTLC exists against its locktime"
+	case s.State != StateDraft && s.State != StateAwaitingFunding:
+		return true, "the swap is past waiting for funding"
+	}
+	return false, ""
 }
 
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the

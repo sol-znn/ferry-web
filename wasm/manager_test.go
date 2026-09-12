@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/zenon/ferry-web/wasm/chain"
 	"github.com/zenon/ferry-web/wasm/znn"
 )
@@ -1029,5 +1032,241 @@ func TestShortFundingHoldClearsOnlyForACoveringOutput(t *testing.T) {
 	if got.State != StateRedeemed || backend.broadcasts != 1 {
 		t.Errorf("state %q with %d broadcast(s), want redeemed with exactly one",
 			got.State, backend.broadcasts)
+	}
+}
+
+// fundingTxPaying is a one-output transaction paying `pkScript` `value` sat,
+// as a node would serve it: its hex and its id.
+func fundingTxPaying(t *testing.T, pkScript []byte, value int64) (rawHex, txid string) {
+	t.Helper()
+	tx := wire.NewMsgTx(txVersion)
+	prev, _ := chainhash.NewHashFromStr("1111111111111111111111111111111111111111111111111111111111111111")
+	tx.AddTxIn(wire.NewTxIn(&wire.OutPoint{Hash: *prev, Index: 0}, nil, nil))
+	tx.AddTxOut(wire.NewTxOut(value, pkScript))
+	var buf bytes.Buffer
+	if err := tx.Serialize(&buf); err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	return hex.EncodeToString(buf.Bytes()), tx.TxHash().String()
+}
+
+// Once anything is staked on the contract, its bytes are the swap's identity.
+// A byte-identical resend -- a session retransmission, a re-sync, a second
+// paste -- is answered with the swap as it is; different bytes are refused
+// however well they audit, and leave contract, funding, refund and Zenon leg
+// exactly as they were. Before a commitment, a re-audit still replaces.
+func TestAuditFreezesTheContractOnceCommitted(t *testing.T) {
+	m := newManager(t, &stubBackend{feeRate: 2})
+	_, hash, _ := NewSecret()
+	sw, err := m.Create(CreateParams{Role: RoleParticipant, Leg: LegReceive, AmountSats: 400_000,
+		DestAddr: regtestDest, SecretHashHex: hex.EncodeToString(hash)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	first, _ := BuildContract(mustKey(t).PKH, sw.Key.PKH, lock, hash)
+	second, _ := BuildContract(mustKey(t).PKH, sw.Key.PKH, lock+3600, hash) // as good, and different
+
+	// Before anything is staked, the second replaces the first.
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(first)); err != nil {
+		t.Fatalf("first audit: %v", err)
+	}
+	got, err := m.AuditContract(sw.ID, hex.EncodeToString(second))
+	if err != nil {
+		t.Fatalf("a re-audit before commitment was refused: %v", err)
+	}
+	if !bytes.Equal(got.Contract, second) {
+		t.Fatal("a re-audit before commitment did not replace the contract")
+	}
+	// Back to the first, then stake something on it.
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(first)); err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	got, _ = m.Store.Load(sw.ID)
+	got.Funding = &FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a", Value: 400_000, Confirmed: true}
+	got.Zenon.HtlcID = "9f"
+	got.Zenon.Verified = true
+	if err := m.Store.Save(got); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	before, _ := m.Store.Load(sw.ID)
+	events := len(before.Events)
+
+	// The same bytes: nothing new, nothing changed, nothing logged.
+	same, err := m.AuditContract(sw.ID, hex.EncodeToString(first))
+	if err != nil {
+		t.Fatalf("an identical resend was refused: %v", err)
+	}
+	if !bytes.Equal(same.Contract, first) || len(same.Events) != events {
+		t.Errorf("an identical resend changed the record: events %d -> %d", events, len(same.Events))
+	}
+
+	// Different bytes: refused, and the record is as it was.
+	_, err = m.AuditContract(sw.ID, hex.EncodeToString(second))
+	if err == nil {
+		t.Fatal("a different contract replaced a funded one")
+	}
+	if !strings.Contains(err.Error(), "cannot change now") || !strings.Contains(err.Error(), "funding has been seen") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+	after, _ := m.Store.Load(sw.ID)
+	if !bytes.Equal(after.Contract, first) || after.Funding == nil || after.Zenon.HtlcID != "9f" ||
+		!after.Zenon.Verified || after.ContractAddr != before.ContractAddr || after.LockTime != before.LockTime {
+		t.Errorf("a refused contract changed the record: %+v", after)
+	}
+
+	// Every kind of commitment freezes it, not only funding.
+	for name, stake := range map[string]func(s *Swap){
+		"a payment sent":       func(s *Swap) { s.FundingBroadcast = &FundingBroadcast{TxID: "ab"} },
+		"a Zenon HTLC":         func(s *Swap) { s.Zenon.HtlcID = "9f" },
+		"a pre-signed refund":  func(s *Swap) { s.RefundTx = &SpendResult{TxID: "cd"} },
+		"a state past funding": func(s *Swap) { s.State = StateFunded },
+	} {
+		fresh, err := m.Create(CreateParams{Role: RoleParticipant, Leg: LegReceive, AmountSats: 400_000,
+			DestAddr: regtestDest, SecretHashHex: hex.EncodeToString(hash)})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		c1, _ := BuildContract(mustKey(t).PKH, fresh.Key.PKH, lock, hash)
+		c2, _ := BuildContract(mustKey(t).PKH, fresh.Key.PKH, lock, hash)
+		if _, err := m.AuditContract(fresh.ID, hex.EncodeToString(c1)); err != nil {
+			t.Fatalf("%s: audit: %v", name, err)
+		}
+		staked, _ := m.Store.Load(fresh.ID)
+		stake(staked)
+		if err := m.Store.Save(staked); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if _, err := m.AuditContract(fresh.ID, hex.EncodeToString(c2)); err == nil {
+			t.Errorf("%s: a different contract was accepted", name)
+		}
+	}
+}
+
+// The funding side's mirror: the counterparty's pubkey hash builds the
+// contract, so a different hash after funding would rebuild it under a
+// funding that pays the old one.
+func TestCounterpartyPKHFreezesOnceFunded(t *testing.T) {
+	m := newManager(t, &stubBackend{feeRate: 2})
+	sw, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000, DestAddr: regtestDest})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	a, b := mustKey(t), mustKey(t)
+	built, err := m.SetCounterpartyPKH(sw.ID, a.PKHHex())
+	if err != nil {
+		t.Fatalf("SetCounterpartyPKH: %v", err)
+	}
+	// Before funding, a different hash rebuilds.
+	if _, err := m.SetCounterpartyPKH(sw.ID, b.PKHHex()); err != nil {
+		t.Fatalf("a rebuild before funding was refused: %v", err)
+	}
+	if _, err := m.SetCounterpartyPKH(sw.ID, a.PKHHex()); err != nil {
+		t.Fatalf("SetCounterpartyPKH: %v", err)
+	}
+	got, _ := m.Store.Load(sw.ID)
+	got.FundingBroadcast = &FundingBroadcast{TxID: "ab"}
+	if err := m.Store.Save(got); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	same, err := m.SetCounterpartyPKH(sw.ID, a.PKHHex())
+	if err != nil || !bytes.Equal(same.Contract, built.Contract) {
+		t.Errorf("an identical resend was refused or changed the contract: %v", err)
+	}
+	if _, err := m.SetCounterpartyPKH(sw.ID, b.PKHHex()); err == nil ||
+		!strings.Contains(err.Error(), "cannot change now") {
+		t.Errorf("a different hash rebuilt a contract that has been paid: %v", err)
+	}
+	after, _ := m.Store.Load(sw.ID)
+	if !bytes.Equal(after.Contract, built.Contract) {
+		t.Error("the refused hash changed the contract")
+	}
+}
+
+// A funding is bound to the script the chain says it pays. A contract swapped
+// out from under it -- however it got there -- is caught before a signature is
+// made; a record from before the binding gets it filled in from the chain, and
+// a chain that cannot be read is a refusal, not a pass.
+func TestFundingIsBoundToTheScriptItPays(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+
+	backend := &stubBackend{
+		feeRate: 2,
+		utxos:   []chain.UTXO{{TxID: txid, Vout: 0, Value: 400_000, Status: chain.Status{Confirmed: true, BlockHeight: 100}}},
+		rawTx:   map[string]string{txid: rawHex},
+	}
+	m := newManager(t, backend)
+	sw := &Swap{
+		ID: "aabbccddeeff0088", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateAwaitingFunding, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding == nil || !strings.EqualFold(got.Funding.PkScriptHex, hex.EncodeToString(pkScript)) {
+		t.Fatalf("the funding was not bound to its script on adoption: %+v", got.Funding)
+	}
+
+	// The attack, by the only route left: the record's contract is replaced
+	// (as a session could once do) while the funding stays. The redeem is
+	// refused before signing, by the binding.
+	other, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash)
+	otherAddr, _ := ContractAddress(other, params)
+	got.Contract, got.ContractAddr = other, otherAddr.String()
+	if err := m.Store.Save(got); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := m.Redeem(context.Background(), sw.ID, ""); err == nil ||
+		!strings.Contains(err.Error(), "not this") {
+		t.Errorf("a redeem of a funding that pays another script was built: %v", err)
+	}
+	if backend.broadcasts != 0 {
+		t.Error("something was broadcast")
+	}
+	// The same through the signer alone, as the Recover page reaches it.
+	if _, err := BuildRedeem(other, *got.Funding, redeem, secret, regtestDest, 2.0, params); err == nil {
+		t.Error("the signer built a spend of a funding bound to another script")
+	}
+
+	// A record from before the binding: the script is read from the chain
+	// before signing, and with the right contract the redeem goes through.
+	got.Contract, got.ContractAddr = contract, addr.String()
+	got.Funding.PkScriptHex = ""
+	if err := m.Store.Save(got); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := m.Redeem(context.Background(), sw.ID, ""); err != nil {
+		t.Fatalf("a bound, correct redeem was refused: %v", err)
+	}
+	bound, _ := m.Store.Load(sw.ID)
+	if !strings.EqualFold(bound.Funding.PkScriptHex, hex.EncodeToString(pkScript)) {
+		t.Error("the binding was not filled in before signing")
+	}
+
+	// And with the chain unreadable, an unbound record is refused, not signed.
+	unbound := &Swap{
+		ID: "aabbccddeeff0099", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateFunded, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+		Funding: &FundingOutput{TxID: "2222222222222222222222222222222222222222222222222222222222222222", Value: 400_000, Confirmed: true},
+	}
+	if err := m.Store.Save(unbound); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := m.Redeem(context.Background(), unbound.ID, ""); err == nil ||
+		!strings.Contains(err.Error(), "fetch funding transaction") {
+		t.Errorf("an unbound funding was spent without reading the chain: %v", err)
 	}
 }
