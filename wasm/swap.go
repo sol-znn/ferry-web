@@ -424,6 +424,7 @@ func (s *Swap) FundingCommitBlocker() string {
 // the Bitcoin funding -- including every shape where that funding is not
 // waited on at all.
 func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
+
 // MissingZenonTerms lists the terms of the Zenon leg this swap never recorded
 // and so cannot check an HTLC against: the address the HTLC must pay (this
 // user's own for an incoming HTLC, the counterparty's for one this user
@@ -434,27 +435,46 @@ func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
 // every route to `verified` refuses while this is non-empty, a verdict stored
 // by an earlier release against incomplete terms is withdrawn on load, and
 // planUnlock will not pack the preimage over one.
-func (s *Swap) MissingZenonTerms() []string {
-	var missing []string
+func (s *Swap) MissingZenonTerms() []MissingTerm {
+	var missing []MissingTerm
 	if s.ZenonHtlcIsOurs() {
 		if strings.TrimSpace(s.Zenon.PeerAddress) == "" {
-			missing = append(missing,
-				"this swap records no Zenon address for the counterparty, the one your HTLC must pay")
+			missing = append(missing, MissingTerm{"peerAddress",
+				"this swap records no Zenon address for the counterparty, the one your HTLC must pay"})
 		}
 	} else if strings.TrimSpace(s.Zenon.SelfAddress) == "" {
-		missing = append(missing,
-			"this swap records no Zenon address of your own, the one their HTLC must pay")
+		missing = append(missing, MissingTerm{"selfAddress",
+			"this swap records no Zenon address of your own, the one their HTLC must pay"})
 	}
 	amount := strings.TrimSpace(s.Zenon.AmountDisplay)
 	switch {
 	case amount == "":
-		missing = append(missing, "this swap records no agreed Zenon amount")
-	case strings.Trim(amount, "0.") == "":
+		missing = append(missing, MissingTerm{"amount", "this swap records no agreed Zenon amount"})
+	case zeroAmount(amount):
 		// A lower bound of zero is no lower bound: one base unit would pass it.
-		missing = append(missing, "this swap's agreed Zenon amount is zero")
+		missing = append(missing, MissingTerm{"amount", "this swap's agreed Zenon amount is zero"})
 	}
 	return missing
 }
+
+// MissingTerm is one term of the Zenon leg a swap never recorded: which field,
+// so the card can offer the right input, and why, so a refusal can say.
+type MissingTerm struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
+// missingReasons is the reasons alone, for a message.
+func missingReasons(ms []MissingTerm) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.Reason)
+	}
+	return out
+}
+
+// zeroAmount reports whether a plain-decimal amount is nothing at all.
+func zeroAmount(s string) bool { return strings.Trim(s, "0.") == "" }
 
 // withdrawStaleVerdict takes back a `verified` that was reached against
 // incomplete terms. The release that had this finding could persist such a
@@ -472,7 +492,7 @@ func (s *Swap) withdrawStaleVerdict() {
 	s.Zenon.Verified = false
 	s.Zenon.VerifyPending = false
 	s.Zenon.VerifyError = "verified by an earlier release against incomplete terms: " +
-		strings.Join(missing, "; ") + ". Add them to the swap and verify again"
+		strings.Join(missingReasons(missing), "; ") + ". Add them to the swap and verify again"
 	msg := "withdrew a verification reached against incomplete terms; the HTLC must be verified again"
 	if !loggedOnce(s, msg) {
 		s.log("%s", msg)
@@ -668,6 +688,9 @@ func DecodeOffer(s string) (*Offer, error) {
 	}
 	if err := canonicalZenonAmount(o.ZenonAmt); err != nil {
 		return nil, fmt.Errorf("offer's %w", err)
+	}
+	if o.ZenonAmt != "" && zeroAmount(o.ZenonAmt) {
+		return nil, errors.New("offer's Zenon amount is zero, which is not an amount")
 	}
 	return &o, nil
 }

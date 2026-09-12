@@ -259,6 +259,10 @@ func (m *Manager) Create(p CreateParams) (*Swap, error) {
 	if err := canonicalZenonAmount(zenonAmount); err != nil {
 		return nil, err
 	}
+	if zenonAmount != "" && zeroAmount(zenonAmount) {
+		return nil, errors.New("the Zenon amount is zero, which is not an amount; leave it blank " +
+			"to fill in later, or give the amount that was agreed")
+	}
 
 	now := time.Now().UTC()
 	sw := &Swap{
@@ -1088,7 +1092,7 @@ func zenonVerifyParams(sw *Swap) znn.VerifyParams {
 	}
 	// Terms never recorded cannot be checked, and a check that cannot run must
 	// not read as one that passed. See Swap.MissingZenonTerms.
-	want.MissingTerms = sw.MissingZenonTerms()
+	want.MissingTerms = missingReasons(sw.MissingZenonTerms())
 	// The initiator's leg must expire LAST, or one party can wait out a chain and
 	// still act on the other. A blanket rule that Zenon expires first would reject
 	// every swap in which Zenon is the initiating side. Only meaningful once the
@@ -1127,7 +1131,7 @@ func (m *Manager) zenonExpectations(ctx context.Context, sw *Swap) znn.VerifyPar
 	// a matching amount.
 	// A missing or zero amount is already among MissingTerms; only a real one
 	// is converted.
-	if amount := strings.TrimSpace(sw.Zenon.AmountDisplay); amount != "" && strings.Trim(amount, "0.") != "" {
+	if amount := strings.TrimSpace(sw.Zenon.AmountDisplay); amount != "" && !zeroAmount(amount) {
 		agreed := sw.Zenon.AgreedToken()
 		if tok, terr := m.Znn.GetToken(ctx, agreed); terr != nil {
 			want.AmountUncheckable = fmt.Sprintf("could not read token %s from the node: %v",
@@ -1158,6 +1162,11 @@ func (m *Manager) SetZenonTerms(ctx context.Context, id, self, peer, amount stri
 		return nil, err
 	}
 	self, peer, amount = strings.TrimSpace(self), strings.TrimSpace(peer), strings.TrimSpace(amount)
+	// A recorded zero is no amount: the rule that refuses to verify against it
+	// also has to let it be repaired, or the record is stuck.
+	if zeroAmount(strings.TrimSpace(sw.Zenon.AmountDisplay)) {
+		sw.Zenon.AmountDisplay = ""
+	}
 	changed := false
 	set := func(name string, current *string, value string, check func(string) error) error {
 		if value == "" || strings.EqualFold(*current, value) {
@@ -1183,7 +1192,7 @@ func (m *Manager) SetZenonTerms(ctx context.Context, id, self, peer, amount stri
 		if err := canonicalZenonAmount(v); err != nil {
 			return err
 		}
-		if strings.Trim(v, "0.") == "" {
+		if zeroAmount(v) {
 			return fmt.Errorf("%q is zero, and a lower bound of zero is no lower bound", v)
 		}
 		if m.Znn == nil {

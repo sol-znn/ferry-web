@@ -159,15 +159,68 @@ ok(
   }).some((l) => l.includes(` 1 ${"ab".repeat(32)}`)),
 );
 ok(
-  "the side that unlocks the counterparty's HTLC still gets its unlock",
-  commands({
-    ...base,
-    zenonHtlcIsOurs: false,
-    fundingCommitted: true,
-    zenon: { ...base.zenon, htlcId: "deadbeef" },
-    secretHex: "cd".repeat(32),
-  }).some((l) => l.startsWith("znn-cli htlc.unlock ")),
+  "the side that unlocks the counterparty's HTLC is shown the id, not a runnable unlock",
+  (() => {
+    const sw = {
+      ...base,
+      zenonHtlcIsOurs: false,
+      fundingCommitted: true,
+      zenon: { ...base.zenon, htlcId: "deadbeef" },
+      secretHex: "cd".repeat(32),
+    };
+    const text = znnCommands(sw);
+    return (
+      !commands(sw).some((l) => l.startsWith("znn-cli htlc.unlock ")) &&
+      text.includes("#   htlc id    deadbeef")
+    );
+  })(),
 );
+
+section(
+  "the unlock is never printed as a command, and the preimage never leaves the card",
+);
+// Every state of the record: unverified, verified, terms missing, zero amount,
+// a stale verdict. The unlock publishes the preimage; the wallet button
+// verifies against the node first and a terminal cannot, so no record state
+// prints a runnable unlock, and the real preimage is not in the block at all.
+const unlocker = (zenon) => ({
+  ...base,
+  zenonHtlcIsOurs: false,
+  fundingCommitted: true,
+  secretHex: "cd".repeat(32),
+  zenon: { ...base.zenon, htlcId: "deadbeef", ...zenon },
+});
+for (const [name, z] of [
+  ["unverified", { verified: false }],
+  ["verified", { verified: true }],
+  ["own address missing", { verified: false, selfAddress: "" }],
+  ["zero amount", { verified: false, amountDisplay: "0" }],
+  [
+    "stale verdict",
+    { verified: true, verifyError: "verified by an earlier release" },
+  ],
+]) {
+  const sw = unlocker(z);
+  const text = znnCommands(sw);
+  const bare = commands(sw);
+  ok(
+    `${name}: no runnable htlc.unlock`,
+    !bare.some((l) => l.includes("htlc.unlock")),
+    bare.join(" | "),
+  );
+  ok(
+    `${name}: the preimage is not in the block`,
+    !text.includes("cd".repeat(32)),
+  );
+  ok(
+    `${name}: the id is shown as a comment`,
+    text.includes("#   htlc id    deadbeef"),
+  );
+  ok(
+    `${name}: receiveAll is still there`,
+    bare.some((l) => l.startsWith("znn-cli receiveAll")),
+  );
+}
 
 section("text from outside cannot become a command when the block is pasted");
 // Every term that reaches the block from outside this page -- the offer, the

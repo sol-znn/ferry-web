@@ -369,7 +369,7 @@ func planUnlock(ctx context.Context, mgr *Manager, sw *Swap, from string,
 		return fmt.Errorf("not unlocking: %s. An unlock publishes the preimage, and against an "+
 			"HTLC whose payee or amount this swap never recorded that is handing the counterparty "+
 			"your Bitcoin for whatever the entry happens to hold. Add the missing terms to the "+
-			"swap and verify the HTLC first", strings.Join(missing, "; "))
+			"swap and verify the HTLC first", strings.Join(missingReasons(missing), "; "))
 	}
 	if !sw.Zenon.Verified {
 		return errors.New("this swap's Zenon HTLC has not passed verification. Unlocking " +

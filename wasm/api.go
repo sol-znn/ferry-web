@@ -117,6 +117,12 @@ type swapView struct {
 	// planCreate's refusal are one rule.
 	FundingCommitted     bool   `json:"fundingCommitted"`
 	FundingCommitBlocker string `json:"fundingCommitBlocker,omitempty"`
+	// MissingZenonTerms are the terms of the Zenon leg this swap never recorded
+	// and so cannot verify an HTLC against -- the card's form is built from
+	// this rather than from its own reading of the fields, so it and the
+	// engine cannot disagree about what counts as missing (a zero amount
+	// does).
+	MissingZenonTerms []MissingTerm `json:"missingZenonTerms,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -171,6 +177,7 @@ func view(sw *Swap) *swapView {
 		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
 		FundingCommitted:     sw.FundingCommitted(),
 		FundingCommitBlocker: sw.FundingCommitBlocker(),
+		MissingZenonTerms:    sw.MissingZenonTerms(),
 		Funding:              sw.Funding,
 		FundingBroadcast:     sw.FundingBroadcast,
 		RefundTx:             sw.RefundTx,

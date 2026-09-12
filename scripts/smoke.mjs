@@ -848,8 +848,22 @@ ok('a zero amount is refused', /zero/.test(zeroAmt.error ?? ''), zeroAmt.error)
 // a node; this suite has none, so the amount is refused rather than recorded.
 const unchecked = await call('zenonTerms', {id: receiver.id, amount: '10', settings: SETTINGS})
 ok('an amount is not recorded without a node to check its precision', /Zenon node/.test(unchecked.error ?? ''), unchecked.error)
+// This participant receives BTC, so the Zenon HTLC is its own and must pay
+// the counterparty: the missing recipient is theirs, and the amount is missing.
+ok(
+  'the view names what is missing, by field',
+  JSON.stringify((receiver.missingZenonTerms ?? []).map((t) => t.key)) === '["peerAddress","amount"]',
+  JSON.stringify(receiver.missingZenonTerms),
+)
 const termed = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, settings: SETTINGS})
 ok('a blank address is filled in', termed.zenon?.selfAddress === MINE, termed.error)
+const peered = await call('zenonTerms', {id: receiver.id, peerAddress: OTHER, settings: SETTINGS})
+ok(
+  "the counterparty's address drops out of the missing terms, leaving the amount",
+  peered.zenon?.peerAddress === OTHER &&
+    JSON.stringify((peered.missingZenonTerms ?? []).map((t) => t.key)) === '["amount"]',
+  peered.error ?? JSON.stringify(peered.missingZenonTerms),
+)
 const moved = await call('zenonTerms', {id: receiver.id, selfAddress: OTHER, settings: SETTINGS})
 ok('an agreed address cannot be changed', /cannot be changed/.test(moved.error ?? ''), moved.error)
 const same = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, settings: SETTINGS})

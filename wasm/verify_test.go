@@ -667,3 +667,74 @@ func TestZenonTermsFillBlanksOnly(t *testing.T) {
 		t.Errorf("resubmitting the same terms was refused: %v", err)
 	}
 }
+
+// The nit from review: an HTLC the node cannot answer for leaves the block
+// empty. And a zero recorded before the rule is repairable, not stuck.
+func TestUnlockLookupFailureAndZeroRepair(t *testing.T) {
+	secret, hash, err := NewSecret()
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	// A node with no such entry.
+	node := zenonStubNode(t, func() map[string]any { return nil }, 8)
+	m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(node.URL), Network: "regtest"}
+	sw := &Swap{
+		ID: "abcdef0123456766", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, Key: mustKey(t), Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		LockTime: time.Now().Add(48 * time.Hour).Unix(),
+		Zenon: ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: "10",
+			HtlcID: f03HtlcID, Verified: true},
+	}
+	plan := &walletBlockPlan{Block: newWalletBlock(69, f03Mine)}
+	if err := planUnlock(t.Context(), m, sw, f03Mine, plan); err == nil ||
+		!strings.Contains(err.Error(), "could not re-read") {
+		t.Errorf("an unlock was planned though the entry could not be read: %v", err)
+	}
+	if plan.Block.Data != "" {
+		t.Error("the preimage was packed into the block")
+	}
+
+	// A zero amount, as an older record could hold it: missing, withdrawn on
+	// load, and replaceable -- the one way an agreed term may move, because
+	// zero was never a term.
+	zero := &Swap{ID: "abcdef0123456777", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		Key: mustKey(t), SecretHash: hash,
+		Zenon: ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: "0.00",
+			HtlcID: f03HtlcID, Verified: true}}
+	if err := m.Store.Save(zero); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := m.Store.Load(zero.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Zenon.Verified {
+		t.Error("a verdict over a zero amount survived a load")
+	}
+	if ms := loaded.MissingZenonTerms(); len(ms) != 1 || ms[0].Key != "amount" {
+		t.Errorf("a zero amount is not reported as the missing term: %+v", ms)
+	}
+	got, err := m.SetZenonTerms(t.Context(), zero.ID, "", "", "10")
+	if err != nil {
+		t.Fatalf("a zero amount could not be repaired: %v", err)
+	}
+	if got.Zenon.AmountDisplay != "10" || len(got.MissingZenonTerms()) != 0 {
+		t.Errorf("repair did not take: %+v", got.Zenon)
+	}
+
+	// And zero is refused at both doors it could come in by.
+	if _, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000,
+		DestAddr: regtestDest, ZenonAmount: "0"}); err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Errorf("a zero amount was accepted at create: %v", err)
+	}
+	offer := Offer{Version: 1, Network: "regtest", FromRole: RoleInitiator, BTCLeg: LegSend,
+		SecretHash: strings.Repeat("ab", 32), PKH: strings.Repeat("cd", 20), AmountSats: 400_000,
+		ZenonAmt: "00.0"}
+	enc, err := offer.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if _, err := DecodeOffer(enc); err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Errorf("a zero amount was accepted in an offer: %v", err)
+	}
+}

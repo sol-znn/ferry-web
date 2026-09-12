@@ -576,17 +576,18 @@ const htlcToVerify = computed(() => htlcIn.value.trim() || props.swap.zenon?.htl
  * and never changed: they are terms of the trade.
  */
 const zenonWallet = useZenonWallet()
-const missingZenonTerms = computed(() => {
-  const z = props.swap.zenon
-  const out: {key: 'selfAddress' | 'peerAddress' | 'amount'; label: string}[] = []
-  if (props.swap.zenonHtlcIsOurs) {
-    if (!z?.peerAddress) out.push({key: 'peerAddress', label: "the counterparty's Zenon address"})
-  } else if (!z?.selfAddress) {
-    out.push({key: 'selfAddress', label: 'your Zenon address'})
-  }
-  if (!z?.amountDisplay) out.push({key: 'amount', label: 'the agreed Zenon amount'})
-  return out
-})
+const TERM_LABELS = {
+  selfAddress: 'your Zenon address',
+  peerAddress: "the counterparty's Zenon address",
+  amount: 'the agreed Zenon amount',
+} as const
+// Read off the swap view, where Go decided it, rather than from the fields:
+// the engine's rule is what refuses to verify, and a form that read the
+// fields itself would leave a record the engine calls incomplete -- a zero
+// amount -- looking complete here, with no way to repair it.
+const missingZenonTerms = computed(() =>
+  (props.swap.missingZenonTerms ?? []).map((t) => ({key: t.key, label: TERM_LABELS[t.key]})),
+)
 const termIn = ref({selfAddress: '', peerAddress: '', amount: ''})
 const termsReady = computed(() =>
   missingZenonTerms.value.every((t) => termIn.value[t.key].trim() !== ''),
