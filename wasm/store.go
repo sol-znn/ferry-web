@@ -154,6 +154,11 @@ func (s *Store) load(id string) (*Swap, error) {
 	if err := json.Unmarshal([]byte(data), &sw); err != nil {
 		return nil, fmt.Errorf("swap record %s is corrupt: %w", id, err)
 	}
+	// A verdict from before the rule that reached it is not a verdict under
+	// the rule. Withdrawn here, at the one door every record comes through --
+	// a page load, a backup import, the wallet gate -- rather than at each of
+	// them.
+	sw.withdrawStaleVerdict()
 	return &sw, nil
 }
 

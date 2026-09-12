@@ -95,10 +95,21 @@ watch(walletEpoch, () => {
 // compares by identity, so it fired on every reload of the swap list. That was
 // invisible while a reload only followed something the user did, and became a
 // prepared block vanishing mid-read once the list started refreshing itself.
-watch([() => props.swap.id, () => props.swap.lockTime, () => props.swap.zenon?.htlcId], () => {
-  plan.value = null
-  sync.value = null
-})
+watch(
+  [
+    () => props.swap.id,
+    () => props.swap.lockTime,
+    () => props.swap.zenon?.htlcId,
+    // The Bitcoin funding this create answers moving -- reorganised out,
+    // replaced, spent -- is the third way. The block is not wrong, but the
+    // reason to sign it has gone.
+    () => props.swap.fundingCommitted,
+  ],
+  () => {
+    plan.value = null
+    sync.value = null
+  },
+)
 
 const label = computed(
   () =>
@@ -199,6 +210,26 @@ async function sign() {
         `This block was built for ${current.signer} and the wallet now has ` +
           `${walletAddress.value || 'no account'} selected. Nothing was sent — check it again.`,
       )
+    }
+
+    // For a create that answers the counterparty's Bitcoin funding, the gate
+    // runs one more time, now. The engine re-read the chain when it BUILT the
+    // block; a person may have spent minutes reading the summary since, and a
+    // funding that was mined then can have been spent or reorganised out. This
+    // is the same fail-closed check as at plan time -- exact outpoint, full
+    // value, mined, deep enough, and a chain that cannot be read is a refusal
+    // -- not a Refresh, which keeps what it last knew when a read fails.
+    if (props.action === 'create' && props.swap.btcLegIsInitiators) {
+      try {
+        await api.fundingCheck(props.swap.id, settings.value)
+      } catch (err) {
+        plan.value = null
+        const why = err instanceof Error ? err.message : String(err)
+        throw new Error(
+          `Not sent: ${why} The block has been discarded; it is rebuilt when their funding ` +
+            `is settled again.`,
+        )
+      }
     }
 
     const sent = await walletSend(current.block)

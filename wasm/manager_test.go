@@ -32,6 +32,10 @@ type stubBackend struct {
 	// but unconfirmed, which is the state a freshly broadcast funding is in and
 	// the one the depth tracking has to handle without inventing a height.
 	txStatus map[string]chain.Status
+	// broadcasts counts what reached the network. A refusal that is only a
+	// refusal in the error message, after the transaction has gone out, is the
+	// failure this exists to catch.
+	broadcasts int
 }
 
 func (s *stubBackend) TipHeight(context.Context) (int64, error) { return 100, nil }
@@ -66,6 +70,7 @@ func (s *stubBackend) BlockHashAt(_ context.Context, height int64) (string, erro
 }
 
 func (s *stubBackend) Broadcast(_ context.Context, raw string) (string, error) {
+	s.broadcasts++
 	tx, err := DecodeRawTx(raw)
 	if err != nil {
 		return "", err
@@ -842,5 +847,187 @@ func TestPayoutAddressCannotBeRedirected(t *testing.T) {
 	}
 	if _, err = payoutAddress(empty, ""); err == nil {
 		t.Error("a record with no address and none supplied should be refused")
+	}
+}
+
+// A redeem publishes the secret, and the initiator's secret has been nowhere
+// else. Against a contract holding less than was agreed, that hands the
+// counterparty the full Zenon leg for a Bitcoin payment they chose to leave
+// short -- so it is refused, and refused in the engine, where Auto Mode and the
+// button both end up. The participant's secret is already public, so their
+// redeem of the same short contract is simply collecting what is there.
+func TestRedeemWillNotRevealTheSecretForAShortFunding(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refundKey, redeemKey := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, err := BuildContract(refundKey.PKH, redeemKey.PKH, lock, hash)
+	if err != nil {
+		t.Fatalf("BuildContract: %v", err)
+	}
+	addr, err := ContractAddress(contract, params)
+	if err != nil {
+		t.Fatalf("ContractAddress: %v", err)
+	}
+	const txid = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	receiving := func(id string, role Role, value int64) *Swap {
+		return &Swap{
+			ID: id, Network: "regtest", Role: role, Leg: LegReceive, State: StateFunded,
+			Key: redeemKey, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+			Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest,
+			LockTime: lock,
+			Funding:  &FundingOutput{TxID: txid, Vout: 0, Value: value, Confirmed: true},
+		}
+	}
+	backend := &stubBackend{feeRate: 2}
+	m := newManager(t, backend)
+	save := func(sw *Swap) {
+		t.Helper()
+		if err := m.Store.Save(sw); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	// The initiator, short: refused, and the refusal leaves the swap as it was.
+	short := receiving("aabbccddeeff0011", RoleInitiator, 100_000)
+	save(short)
+	if !view(short).RedeemHeldForShortFunding {
+		t.Error("the card is not told the redeem is withheld")
+	}
+	if _, err := m.Redeem(context.Background(), short.ID, ""); err == nil {
+		t.Fatal("a short contract was redeemed with the initiator's secret")
+	} else if !strings.Contains(err.Error(), "publish your secret") {
+		t.Errorf("the refusal does not say what it is protecting: %v", err)
+	}
+	if backend.broadcasts != 0 {
+		t.Errorf("the refusal broadcast %d transaction(s); the secret is out", backend.broadcasts)
+	}
+	got, err := m.Store.Load(short.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.State != StateFunded || got.RedeemTx != nil {
+		t.Errorf("the refusal changed the swap: state %q, redeemTx %v", got.State, got.RedeemTx)
+	}
+
+	// The initiator, paid in full: nothing to hold.
+	full := receiving("aabbccddeeff0022", RoleInitiator, 400_000)
+	save(full)
+	if view(full).RedeemHeldForShortFunding {
+		t.Error("a fully funded contract reads as withheld")
+	}
+	if got, err := m.Redeem(context.Background(), full.ID, ""); err != nil {
+		t.Errorf("a fully funded contract could not be redeemed: %v", err)
+	} else if got.State != StateRedeemed {
+		t.Errorf("state after redeem is %q, want %q", got.State, StateRedeemed)
+	}
+
+	// The participant, short: their secret came off the counterparty's Zenon
+	// unlock and is public. Whatever the contract holds is theirs to take.
+	part := receiving("aabbccddeeff0033", RoleParticipant, 100_000)
+	save(part)
+	if view(part).RedeemHeldForShortFunding {
+		t.Error("the participant's redeem of a short contract reads as withheld")
+	}
+	if got, err := m.Redeem(context.Background(), part.ID, ""); err != nil {
+		t.Errorf("the participant could not collect a short contract: %v", err)
+	} else if got.State != StateRedeemed {
+		t.Errorf("state after redeem is %q, want %q", got.State, StateRedeemed)
+	}
+}
+
+// The same hold, reached the way a live swap reaches it: Refresh adopts a short
+// output off the chain, Redeem is refused, then a single output covering the
+// amount appears, Refresh switches to it, and the redeem goes through. Two
+// short outputs that only cover the amount together must NOT clear it -- the
+// redeem spends one output, so their sum is not what the contract would pay.
+func TestShortFundingHoldClearsOnlyForACoveringOutput(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refundKey, redeemKey := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, err := BuildContract(refundKey.PKH, redeemKey.PKH, lock, hash)
+	if err != nil {
+		t.Fatalf("BuildContract: %v", err)
+	}
+	addr, err := ContractAddress(contract, params)
+	if err != nil {
+		t.Fatalf("ContractAddress: %v", err)
+	}
+	const shortTx = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	const secondShortTx = "1111111111111111111111111111111111111111111111111111111111111111"
+	const fullTx = "2222222222222222222222222222222222222222222222222222222222222222"
+	mined := chain.Status{Confirmed: true, BlockHeight: 100}
+	backend := &stubBackend{
+		feeRate:  2,
+		utxos:    []chain.UTXO{{TxID: shortTx, Vout: 0, Value: 150_000, Status: mined}},
+		txStatus: map[string]chain.Status{shortTx: mined, secondShortTx: mined, fullTx: mined},
+	}
+	m := newManager(t, backend)
+	sw := &Swap{
+		ID: "aabbccddeeff0044", Network: "regtest", Role: RoleInitiator, Leg: LegReceive,
+		State: StateAwaitingFunding, Key: redeemKey, Secret: secret, SecretHash: hash,
+		AmountSats: 400_000, Contract: contract, ContractAddr: addr.String(),
+		DestAddr: regtestDest, LockTime: lock,
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding == nil || got.Funding.Value != 150_000 {
+		t.Fatalf("the short output was not adopted: %+v", got.Funding)
+	}
+	if !got.RedeemHeldForShortFunding() {
+		t.Fatal("a confirmed short funding does not hold the redeem")
+	}
+	if _, err := m.Redeem(context.Background(), sw.ID, ""); err == nil {
+		t.Fatal("redeemed against a short funding adopted from the chain")
+	}
+
+	// A second short output. Together they cover the amount; neither does alone,
+	// and only one is ever spent.
+	backend.utxos = append(backend.utxos,
+		chain.UTXO{TxID: secondShortTx, Vout: 0, Value: 300_000, Status: mined})
+	got, err = m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding.Value != 300_000 {
+		t.Errorf("the larger short output was not preferred: %+v", got.Funding)
+	}
+	if !got.RedeemHeldForShortFunding() {
+		t.Fatal("two short outputs were treated as covering the amount together")
+	}
+	if _, err := m.Redeem(context.Background(), sw.ID, ""); err == nil {
+		t.Fatal("redeemed against two short outputs")
+	}
+	if backend.broadcasts != 0 {
+		t.Fatalf("%d transaction(s) were broadcast while the redeem was held", backend.broadcasts)
+	}
+
+	// A single covering output. This is what the hold waits for.
+	backend.utxos = append(backend.utxos,
+		chain.UTXO{TxID: fullTx, Vout: 0, Value: 400_000, Status: mined})
+	got, err = m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding.TxID != fullTx {
+		t.Fatalf("Refresh did not switch to the covering output: %+v", got.Funding)
+	}
+	if got.RedeemHeldForShortFunding() {
+		t.Fatal("a covering output still holds the redeem")
+	}
+	got, err = m.Redeem(context.Background(), sw.ID, "")
+	if err != nil {
+		t.Fatalf("Redeem after a covering output: %v", err)
+	}
+	if got.State != StateRedeemed || backend.broadcasts != 1 {
+		t.Errorf("state %q with %d broadcast(s), want redeemed with exactly one",
+			got.State, backend.broadcasts)
 	}
 }

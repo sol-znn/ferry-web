@@ -53,6 +53,11 @@ export interface KeyView {
 }
 
 /** The other half of the trade. This app reads Zenon state but never writes it. */
+export interface MissingZenonTerm {
+  key: 'selfAddress' | 'peerAddress' | 'amount'
+  reason: string
+}
+
 export interface ZenonLeg {
   htlcId?: string
   selfAddress?: string
@@ -140,6 +145,24 @@ export interface Swap {
   secretArrivesOnZenon: boolean
   /** A contract funded for less than was agreed. */
   fundingShort?: boolean
+  /** The redeem is withheld: the contract is short AND this side's redeem
+   *  would be the first publication of its secret, which is what opens the
+   *  Zenon leg for the counterparty. Computed in Go (Swap.RedeemHeldForShortFunding)
+   *  so the missing button and the engine's refusal are one rule. */
+  redeemHeldForShortFunding?: boolean
+  /** Nothing about the counterparty's Bitcoin funding stands in the way of
+   *  this side creating its Zenon HTLC. False only for the participant in a
+   *  Bitcoin-initiated swap while that funding is missing, short, unconfirmed
+   *  or spent -- and then fundingCommitBlocker says which. Computed in Go
+   *  (Swap.FundingCommitBlocker) so the card's gate and the engine's refusal
+   *  are one rule. */
+  fundingCommitted: boolean
+  fundingCommitBlocker?: string
+  /** Terms of the Zenon leg this swap never recorded, so no HTLC can verify
+   *  against it: which field, and why. The card's repair form is built from
+   *  this rather than from its own reading of the fields, so it and Go cannot
+   *  disagree about what counts as missing (a zero amount does). */
+  missingZenonTerms?: MissingZenonTerm[]
 
   funding?: FundingOutput
   refundTx?: SpendResult

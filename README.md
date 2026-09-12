@@ -74,7 +74,8 @@ the wallet signs it, exactly as on the Bitcoin side.
   [znn-cli] commands are printed for anyone whose wallet is not that extension.
   See [docs/EXTENSION-WALLET.md](docs/EXTENSION-WALLET.md).
 - Verification is not a formality. Ferry refuses an HTLC that commits to the
-  wrong hash, pays the wrong party, **holds a token nobody agreed to**,
+  wrong hash, pays the wrong party **or a party this swap never named**,
+  **holds a token nobody agreed to**,
   underpays, is about to expire, or sits on the wrong side of the Bitcoin
   locktime for the role it is playing. Nor does it report a check it could not
   perform as one that passed: if the agreed amount cannot be converted into base
@@ -192,8 +193,8 @@ offer:
   grants nothing.
 - **It never refunds**, and it waits where a person would. Abandoning a swap is a
   decision about whether to keep waiting, so that button stays yours; and it will
-  not fund out of turn, or redeem against a funding still sitting in a mempool
-  where the sender can replace it. The first thing that goes wrong stops all of
+  not fund out of turn, redeem against a funding still sitting in a mempool
+  where the sender can replace it, or lock ZNN against one. The first thing that goes wrong stops all of
   it and says so on the card, rather than being retried.
 
 It is armed per swap and never globally, because approval is about this trade,
@@ -251,8 +252,11 @@ goes quiet has not taken anything from you that a node cannot give back.
    secret; otherwise use the hash from the offer.
 2. Send them your pubkey hash. They build and fund the contract.
 3. Paste their contract hex and **audit** it. Ferry refuses it unless it is
-   genuinely redeemable by your key _and_ its locktime sits on the correct side
-   of your Zenon leg. This check reaches no node — it works entirely offline.
+   genuinely redeemable by your key, its locktime sits on the correct side of
+   your Zenon leg, _and_ it is the canonical encoding of the template — the
+   same terms written with a longer push opcode than they need would leave you
+   a redeem that standard policy refuses while their refund still works. This
+   check reaches no node — it works entirely offline.
 4. Create your Zenon HTLC. With the Syrius extension that is a button; without
    it, switch on **Show CLI commands** at the foot of the card for the `znn-cli`
    line, already carrying `hashType 1` and the expiry Ferry computed from the

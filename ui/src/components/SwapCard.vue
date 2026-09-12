@@ -48,6 +48,7 @@ import {useUnisat} from '@/core/composables/useUnisat'
 import {useUnlockCost} from '@/core/composables/useUnlockCost'
 import {useSession} from '@/core/composables/useSession'
 import {useCliCommands} from '@/core/composables/useCliCommands'
+import {useZenonWallet} from '@/core/composables/useZenonWallet'
 import {useAutoMode} from '@/core/composables/useAutoMode'
 import type {HandoffType} from '@/core/handoffs'
 import type {Swap, WalletAction} from '@/types'
@@ -324,12 +325,17 @@ const fundingDepth = computed(() => {
     variant: (n >= 3 ? 'success' : 'pending') as BadgeVariants['variant'],
   }
 })
+// A redeem publishes the secret. Where that secret is this side's own and the
+// contract holds less than was agreed, the engine refuses to build one, so the
+// button is not offered either -- the rule is Go's, and this only reads it.
+// Auto Mode goes through this same gate.
 const canRedeem = computed(
   () =>
     props.swap.leg === 'receive' &&
     Boolean(props.swap.funding) &&
     Boolean(props.swap.secretHex) &&
-    props.swap.state !== 'redeemed',
+    props.swap.state !== 'redeemed' &&
+    !props.swap.redeemHeldForShortFunding,
 )
 // Only one shape needs the preimage typed in: the participant who created the
 // Zenon HTLC. The initiator unlocking it publishes the preimage on Zenon, and
@@ -415,6 +421,13 @@ const showHashlock = computed(
 const zenonAction = computed<WalletAction | null>(() => {
   if (props.swap.zenonHtlcIsOurs) {
     if (!live.value || props.swap.zenon?.htlcId) return null
+    // Where this leg answers the counterparty's Bitcoin funding, it is not
+    // offered until that funding is real: present, covering the amount, mined
+    // and unspent, as Go judges it. Not mounting the wallet panel is what
+    // makes Auto Mode wait here rather than halt on the engine's refusal --
+    // and the panel appears, and autopilot moves, the moment a refresh says
+    // the funding has settled.
+    if (!props.swap.fundingCommitted) return null
     return 'create'
   }
   if (props.swap.zenon?.unlockHash) return null
@@ -556,6 +569,50 @@ async function zenonDone(action: WalletAction) {
  * counterparty's id arrives, and that must always override.
  */
 const htlcToVerify = computed(() => htlcIn.value.trim() || props.swap.zenon?.htlcId || '')
+
+/**
+ * The Zenon terms this swap is missing, and so cannot verify an HTLC against.
+ *
+ * The addresses are optional at creation because they are routinely filled in
+ * later; verification is where they stop being optional. An expectation left
+ * blank is not a check switched off but a check with no answer -- an HTLC
+ * paying anybody at all would pass it -- so Go refuses to verify until these
+ * are on the swap, and this form is how they get there. Each can be set once
+ * and never changed: they are terms of the trade.
+ */
+const zenonWallet = useZenonWallet()
+const TERM_LABELS = {
+  selfAddress: 'your Zenon address',
+  peerAddress: "the counterparty's Zenon address",
+  amount: 'the agreed Zenon amount',
+} as const
+// Read off the swap view, where Go decided it, rather than from the fields:
+// the engine's rule is what refuses to verify, and a form that read the
+// fields itself would leave a record the engine calls incomplete -- a zero
+// amount -- looking complete here, with no way to repair it.
+const missingZenonTerms = computed(() =>
+  (props.swap.missingZenonTerms ?? []).map((t) => ({key: t.key, label: TERM_LABELS[t.key]})),
+)
+const termIn = ref({selfAddress: '', peerAddress: '', amount: ''})
+const termsReady = computed(() =>
+  missingZenonTerms.value.every((t) => termIn.value[t.key].trim() !== ''),
+)
+function useWalletAddress() {
+  if (zenonWallet.address.value) termIn.value.selfAddress = zenonWallet.address.value
+}
+async function saveZenonTerms() {
+  await run(() =>
+    api.zenonTerms(
+      props.swap.id,
+      {
+        selfAddress: termIn.value.selfAddress.trim() || undefined,
+        peerAddress: termIn.value.peerAddress.trim() || undefined,
+        amount: termIn.value.amount.trim() || undefined,
+      },
+      settings.value,
+    ),
+  )
+}
 
 async function verifyZenon() {
   error.value = ''
@@ -721,6 +778,12 @@ const autoMayFund = computed(
  * that opens the Zenon leg. One block makes that expensive rather than free. The
  * button beside it stays live and unconditional -- somebody watching a specific
  * swap may have a reason to accept that risk.
+ *
+ * The amount is not left to judgement the same way. A confirmed payment that is
+ * SHORT of what was agreed is not a redeem waiting to happen: revealing the
+ * initiator's secret against it hands the counterparty the full Zenon leg for a
+ * payment they chose the size of. That gate is canRedeem's, so it holds here
+ * and on the button alike, and the engine refuses even if neither did.
  *
  * Refunding is deliberately absent -- see the note in useAutoMode.
  */
@@ -1227,6 +1290,38 @@ async function downloadRecovery() {
         </div>
       </section>
 
+      <!-- The create is withheld, and why. This is the participant in a swap
+           the Bitcoin side initiated: their ZNN answers a payment that is not
+           yet real, and locking it against one the sender can still replace
+           hands them the ZNN for nothing. Outside the Zenon section on purpose:
+           that section waits for a funding record to exist at all, and the
+           commonest reason to be waiting is that nothing has been paid yet,
+           which is exactly when the explanation is owed. -->
+      <Note
+        v-if="
+          swap.contractAddr &&
+          swap.zenonHtlcIsOurs &&
+          !swap.zenon?.htlcId &&
+          live &&
+          swap.fundingCommitBlocker
+        "
+        variant="warn"
+        summary="Not locking ZNN yet: their Bitcoin funding is not settled"
+      >
+        <p>
+          {{
+            swap.fundingCommitBlocker.charAt(0).toUpperCase() + swap.fundingCommitBlocker.slice(1)
+          }}. Your Zenon HTLC answers that payment, so it waits until the payment is mined and
+          covers the agreed amount. A payment still in a mempool is one its sender can replace
+          &mdash; and they already hold the secret that would open your HTLC.
+        </p>
+        <p class="mt-2">
+          Refresh keeps checking. The create appears &mdash; and runs by itself under Auto Mode
+          &mdash; once it is settled. No znn-cli create command is printed for this leg at any
+          point: a terminal runs no check, so the wallet button is the way to create it.
+        </p>
+      </Note>
+
       <!-- The Zenon leg -->
       <section v-if="showZenon" class="grid min-w-0 gap-3 rounded-lg border border-border p-3">
         <h3 class="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
@@ -1240,7 +1335,9 @@ async function downloadRecovery() {
               With the Syrius browser extension that is a button: the block goes to the extension,
               which shows it to you, signs it with its own key, mines its own plasma and publishes
               through its own node. Without it, the same operation is the printed
-              <code>znn-cli</code> command.
+              <code>znn-cli</code> command &mdash; except for a create that answers the
+              counterparty's Bitcoin funding, which is never printed as a command: a terminal runs
+              no check, and that check is the whole point. The terms are printed instead.
             </p>
           </InfoTip>
           <span class="flex-1" />
@@ -1337,6 +1434,64 @@ async function downloadRecovery() {
              the leg has an open question. A verified HTLC has none: the row
              disappears and the badge in the summary above carries the verdict
              from then on. -->
+        <!-- Terms the swap was created without. Verification refuses until they
+             are here, and says so; this is the way in, ahead of the Verify row
+             it unblocks. -->
+        <div
+          v-if="live && !swap.zenon?.verified && missingZenonTerms.length"
+          class="grid gap-2 rounded-md border border-warning/40 bg-warning/5 p-3"
+        >
+          <p class="text-sm text-warning">
+            The Zenon HTLC cannot be verified yet: a check with nothing to compare against would
+            pass an HTLC that pays anybody. Missing here:
+            {{ (swap.missingZenonTerms ?? []).map((t) => t.reason).join('; ') }}. Each is a term of
+            the trade and cannot be changed once added.
+          </p>
+          <template v-for="t in missingZenonTerms" :key="t.key">
+            <div v-if="t.key === 'selfAddress'" class="flex min-w-0 flex-wrap gap-2">
+              <Input
+                v-model="termIn.selfAddress"
+                spellcheck="false"
+                autocapitalize="none"
+                autocomplete="off"
+                placeholder="your Zenon address (z1…), where their HTLC pays you"
+                class="min-w-56 flex-1 font-mono"
+              />
+              <Button
+                v-if="zenonWallet.connected.value && zenonWallet.address.value"
+                variant="outline"
+                @click="useWalletAddress"
+              >
+                Use the connected wallet's address
+              </Button>
+            </div>
+            <Input
+              v-else-if="t.key === 'peerAddress'"
+              v-model="termIn.peerAddress"
+              spellcheck="false"
+              autocapitalize="none"
+              autocomplete="off"
+              placeholder="the counterparty's Zenon address (z1…), which your HTLC pays"
+              class="font-mono"
+            />
+            <Input
+              v-else
+              v-model="termIn.amount"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="the agreed Zenon amount, e.g. 10 or 1.25"
+              class="font-mono"
+            />
+          </template>
+          <Button
+            class="justify-self-start"
+            :disabled="busy || !termsReady"
+            @click="saveZenonTerms"
+          >
+            Add to the swap
+          </Button>
+        </div>
+
         <template v-if="needsVerify">
           <p v-if="!hasZenon" class="flex items-start gap-1.5 text-sm text-warning">
             <span class="min-w-0 flex-1">
@@ -1475,6 +1630,31 @@ async function downloadRecovery() {
         :error="unlockError"
         :unlocked-by="unlockedBy"
       />
+
+      <!-- The redeem is withheld, and why. Said on the card rather than left to
+           the engine's error, because the button that would have produced that
+           error is not shown -- a swap that looks funded and redeemable with no
+           way to redeem it needs a sentence. -->
+      <Note
+        v-if="swap.redeemHeldForShortFunding"
+        variant="warn"
+        summary="Redeem withheld: the contract is short of the agreed amount"
+      >
+        <p>
+          The contract holds {{ sats(swap.funding?.value ?? 0) }} against the
+          {{ sats(swap.amountSats) }} agreed. Redeeming it would publish your secret, and that is
+          what lets the counterparty unlock the Zenon leg you lock for them &mdash; in full, against
+          a payment they chose to leave short.
+        </p>
+        <p class="mt-2">
+          What clears this is a single payment to the contract for the full agreed amount: Refresh
+          keeps looking for one, and switches to it when it appears. Several smaller payments are
+          not added together. Do not create your Zenon HTLC against this funding. If you decide to
+          take the partial payment anyway, do it only once your Zenon HTLC has expired and been
+          reclaimed, or was never created: the Recover page builds that redeem from this swap's
+          recovery file, and broadcasting it publishes the secret.
+        </p>
+      </Note>
 
       <!-- Actions, loudest first: the one thing this swap can do now, then the
            ones that are always available. -->

@@ -255,6 +255,15 @@ func (m *Manager) Create(p CreateParams) (*Swap, error) {
 		return nil, err
 	}
 
+	zenonAmount := strings.TrimSpace(p.ZenonAmount)
+	if err := canonicalZenonAmount(zenonAmount); err != nil {
+		return nil, err
+	}
+	if zenonAmount != "" && zeroAmount(zenonAmount) {
+		return nil, errors.New("the Zenon amount is zero, which is not an amount; leave it blank " +
+			"to fill in later, or give the amount that was agreed")
+	}
+
 	now := time.Now().UTC()
 	sw := &Swap{
 		ID:         id,
@@ -271,7 +280,7 @@ func (m *Manager) Create(p CreateParams) (*Swap, error) {
 			SelfAddress:   zenonSelf,
 			PeerAddress:   zenonPeer,
 			TokenStandard: zenonToken,
-			AmountDisplay: strings.TrimSpace(p.ZenonAmount),
+			AmountDisplay: zenonAmount,
 			HashType:      znn.HashTypeSHA256,
 			KeyMaxSize:    SecretSize,
 		},
@@ -948,6 +957,31 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	if len(sw.Secret) == 0 {
 		return nil, errors.New("the secret is not known yet, so this contract cannot be redeemed")
 	}
+	// A redeem publishes the secret. When the secret is this side's own -- the
+	// initiator's, generated here and so far nowhere else -- publishing it is
+	// what lets the counterparty open the Zenon HTLC this user locked for them.
+	// Against a contract holding less than was agreed, that is the whole Zenon
+	// leg exchanged for a partial payment of BTC whose size the counterparty
+	// chose. So it is refused here, whoever asked: the card withholds the button
+	// on the same rule, and Auto Mode goes no further. Refresh keeps looking for
+	// a single output that covers the amount and switches to one when it
+	// appears; several short outputs are never added together.
+	//
+	// The participant's redeem is the opposite case and is not held: their
+	// secret came off the counterparty's Zenon unlock and is public already, so
+	// taking whatever the contract holds costs nothing further.
+	if sw.RedeemHeldForShortFunding() {
+		return nil, fmt.Errorf("the contract holds %d sat but %d sat was agreed, and redeeming "+
+			"it would publish your secret -- which is what lets the counterparty unlock the "+
+			"Zenon leg you lock for them, in full, against a payment they chose to leave "+
+			"short. What clears this is a single payment of the full amount (Refresh keeps "+
+			"looking for one; smaller payments are not added together). Do not create your "+
+			"Zenon HTLC against this funding. If you decide to take the partial payment "+
+			"anyway, do it only once your Zenon HTLC has expired and been reclaimed, or was "+
+			"never created: the Recover page builds that redeem from this swap's recovery "+
+			"file, and broadcasting it publishes the secret",
+			sw.Funding.Value, sw.AmountSats)
+	}
 	destAddr, err = payoutAddress(sw, destAddr)
 	if err != nil {
 		return nil, err
@@ -1081,6 +1115,9 @@ func zenonVerifyParams(sw *Swap) znn.VerifyParams {
 		want.ExpectRecipient = sw.Zenon.SelfAddress
 		want.ExpectSender = sw.Zenon.PeerAddress
 	}
+	// Terms never recorded cannot be checked, and a check that cannot run must
+	// not read as one that passed. See Swap.MissingZenonTerms.
+	want.MissingTerms = missingReasons(sw.MissingZenonTerms())
 	// The initiator's leg must expire LAST, or one party can wait out a chain and
 	// still act on the other. A blanket rule that Zenon expires first would reject
 	// every swap in which Zenon is the initiating side. Only meaningful once the
@@ -1117,7 +1154,9 @@ func (m *Manager) zenonExpectations(ctx context.Context, sw *Swap) znn.VerifyPar
 	// they issued this morning. Every failure sets AmountUncheckable rather than
 	// leaving MinAmount nil, so a comparison that did not run cannot come back as
 	// a matching amount.
-	if sw.Zenon.AmountDisplay != "" {
+	// A missing or zero amount is already among MissingTerms; only a real one
+	// is converted.
+	if amount := strings.TrimSpace(sw.Zenon.AmountDisplay); amount != "" && !zeroAmount(amount) {
 		agreed := sw.Zenon.AgreedToken()
 		if tok, terr := m.Znn.GetToken(ctx, agreed); terr != nil {
 			want.AmountUncheckable = fmt.Sprintf("could not read token %s from the node: %v",
@@ -1130,6 +1169,94 @@ func (m *Manager) zenonExpectations(ctx context.Context, sw *Swap) znn.VerifyPar
 		}
 	}
 	return want
+}
+
+// SetZenonTerms completes the Zenon terms a swap was created without: this
+// user's own address, the counterparty's, the agreed amount. Each can be SET
+// where it is blank and never changed where it is not -- they are terms of the
+// trade, and a term that can be edited after the fact is one that can be
+// edited to match whatever the counterparty locked. Filling one in resets the
+// leg's verification, because a verdict reached against fewer terms is not a
+// verdict against these.
+//
+// Values that equal what is already recorded are accepted silently, so a page
+// that submits the whole form need not work out which fields it changed.
+func (m *Manager) SetZenonTerms(ctx context.Context, id, self, peer, amount string) (*Swap, error) {
+	sw, err := m.Store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	self, peer, amount = strings.TrimSpace(self), strings.TrimSpace(peer), strings.TrimSpace(amount)
+	// A recorded zero is no amount: the rule that refuses to verify against it
+	// also has to let it be repaired, or the record is stuck.
+	if zeroAmount(strings.TrimSpace(sw.Zenon.AmountDisplay)) {
+		sw.Zenon.AmountDisplay = ""
+	}
+	changed := false
+	set := func(name string, current *string, value string, check func(string) error) error {
+		if value == "" || strings.EqualFold(*current, value) {
+			return nil
+		}
+		if *current != "" {
+			return fmt.Errorf("%s is already %s on this swap and cannot be changed to %s: it is a "+
+				"term of the trade. To trade on different terms, create a new swap", name, *current, value)
+		}
+		if err := check(value); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		*current = value
+		changed = true
+		sw.log("%s set to %s", name, value)
+		return nil
+	}
+	// An amount becomes immutable the moment it is recorded, so everything
+	// that would make it unusable is checked first: the shape, that it is more
+	// than nothing, and that the agreed token can represent it -- which needs
+	// the token's decimals from a node, and without a node is a refusal.
+	isAmount := func(v string) error {
+		if err := canonicalZenonAmount(v); err != nil {
+			return err
+		}
+		if zeroAmount(v) {
+			return fmt.Errorf("%q is zero, and a lower bound of zero is no lower bound", v)
+		}
+		if m.Znn == nil {
+			return errors.New("the amount's precision has to be checked against the agreed token, " +
+				"which needs a Zenon node: set one under Nodes and try again")
+		}
+		tok, err := m.Znn.GetToken(ctx, sw.Zenon.AgreedToken())
+		if err != nil {
+			return fmt.Errorf("could not read token %s from the node to check the amount's "+
+				"precision: %w", sw.Zenon.AgreedToken(), err)
+		}
+		if _, err := decimalToBaseUnits(v, tok.Decimals); err != nil {
+			return fmt.Errorf("%s cannot be locked in %s: %w", v, tok.Symbol, err)
+		}
+		return nil
+	}
+	isAddress := func(v string) error { _, err := znn.ParseAddress(v); return err }
+	if err := set("your Zenon address", &sw.Zenon.SelfAddress, self, isAddress); err != nil {
+		return nil, err
+	}
+	if err := set("the counterparty's Zenon address", &sw.Zenon.PeerAddress, peer, isAddress); err != nil {
+		return nil, err
+	}
+	if err := set("the agreed Zenon amount", &sw.Zenon.AmountDisplay, amount, isAmount); err != nil {
+		return nil, err
+	}
+	if changed && sw.Zenon.HtlcID != "" {
+		sw.Zenon.Verified = false
+		sw.Zenon.VerifyError = ""
+		sw.Zenon.VerifyPending = false
+		sw.log("the Zenon terms changed, so HTLC %s must be verified again", sw.Zenon.HtlcID)
+	}
+	if !changed {
+		return sw, nil
+	}
+	if err := m.Store.Save(sw); err != nil {
+		return nil, err
+	}
+	return sw, nil
 }
 
 // VerifyZenon fetches this swap's Zenon HTLC -- the counterparty's when they

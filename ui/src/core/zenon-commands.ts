@@ -39,6 +39,17 @@ export function cliNodeURL(appURL: string | undefined): string {
   return `${secure ? 'wss' : 'ws'}://${u.hostname}:${port}`
 }
 
+/**
+ * Text that is not a command, as comment lines. Every physical line gets its
+ * own `# `, because this block is copied into a terminal and a newline inside
+ * a message -- an error body relayed from a node this browser was pointed at,
+ * say -- would otherwise end the comment and start a command. Carriage returns
+ * count as line breaks for the same reason.
+ */
+export function comment(text: string): string[] {
+  return text.split(/\r\n|\r|\n/).map((l) => `# ${l}`)
+}
+
 /** How the printed commands should name the user's own signing account. */
 export interface CommandContext {
   /** The Zenon node this browser is set to, translated to znn-cli's transport. */
@@ -86,7 +97,56 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
       `# This is the ${ours} leg, so it must expire ` +
         `${sw.btcLegIsInitiators ? 'BEFORE' : 'AFTER'} the Bitcoin contract.`,
     )
-    if (hours && hours > ZNN_CLI_MAX_HOURS) {
+    if (sw.btcLegIsInitiators) {
+      // This leg answers the counterparty's Bitcoin funding, and the create
+      // is NOT printed as a command for it, whatever the swap record says. The
+      // wallet button is behind Go's gate twice over -- the funding is read
+      // off the chain when the block is built and again before it is signed
+      // -- but a command copied into a terminal passes through no gate at
+      // all, and every attempt to gate the text on a remembered answer has a
+      // moment where the answer is stale. So the terms are printed, as
+      // comments, and the command is not: somebody who must use znn-cli for
+      // this leg composes it after checking the funding themselves, at the
+      // moment they run it.
+      lines.push(
+        ...comment(
+          'No create command is printed for this leg. It answers their Bitcoin payment, ' +
+            'and locking ZNN against a payment that can still be replaced or reclaimed ' +
+            'hands them the ZNN: they already hold the secret. Use the wallet button ' +
+            'above, which checks the funding against the chain when the block is built ' +
+            'and again before it is signed.',
+        ),
+      )
+      lines.push('#')
+      lines.push(
+        ...comment(
+          'If you must use znn-cli, check on your own node, immediately before running ' +
+            `it, that the contract output is unspent, mined, holds ${sw.amountSats} sat, ` +
+            'and that the Bitcoin locktime is far enough away to fit this leg before it. ' +
+            'Then htlc.create takes, in order:',
+        ),
+      )
+      // Each term through comment(), whole: these values come from the offer,
+      // the form and the chain, and a line break inside one would otherwise
+      // end the comment and start a command.
+      for (const term of [
+        `  recipient  ${peer}`,
+        `  token      ${token}`,
+        `  amount     ${amount}`,
+        `  hours      ${hours || '<hours>'}` +
+          (hours && hours > ZNN_CLI_MAX_HOURS
+            ? ` (over znn-cli's ${ZNN_CLI_MAX_HOURS}h cap: use the wallet)`
+            : ''),
+        '  hashtype   1  (SHA-256, what Bitcoin OP_SHA256 requires)',
+        `  hashlock   ${sw.secretHashHex}`,
+      ]) {
+        lines.push(...comment(term))
+      }
+      if (sw.fundingCommitBlocker) {
+        lines.push('#')
+        lines.push(...comment(`As of the last refresh: ${sw.fundingCommitBlocker}.`))
+      }
+    } else if (hours && hours > ZNN_CLI_MAX_HOURS) {
       lines.push(
         `# znn-cli cannot express this leg: it caps htlc.create at ${ZNN_CLI_MAX_HOURS}h and this` +
           ` needs ${hours}h. Use the Syrius extension, which has no cap.`,
@@ -96,10 +156,10 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
         `znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1` +
           ` ${sw.secretHashHex}${cliFlags}`,
       )
+      lines.push('')
+      lines.push('# It will print an id. Paste that into "Zenon HTLC id" above and verify it —')
+      lines.push('# verifying your own HTLC is how you catch a typo before they act on it.')
     }
-    lines.push('')
-    lines.push('# It will print an id. Paste that into "Zenon HTLC id" above and verify it —')
-    lines.push('# verifying your own HTLC is how you catch a typo before they act on it.')
     lines.push('')
     if (sw.secretArrivesOnZenon) {
       lines.push('# When they unlock it, the preimage becomes visible on Zenon. Unlocking DELETES')
@@ -114,11 +174,29 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
     lines.push('# If the swap stalls, reclaim after expiry:')
     lines.push(`znn-cli htlc.reclaim ${sw.zenon?.htlcId || '<your htlc id>'}${cliFlags}`)
   } else {
-    // The counterparty sends ZNN, so they create the Zenon HTLC.
+    // The counterparty sends ZNN, so they create the Zenon HTLC, and this user
+    // unlocks it -- which publishes the preimage. The wallet button will not
+    // build that block until the HTLC has been verified against the agreed
+    // terms, and it reads the entry off the node again immediately before the
+    // preimage goes in. A command in a terminal passes through none of that,
+    // and a gate on the text that depends on a remembered verdict always has a
+    // moment where the verdict is stale. So the runnable line is not printed:
+    // the id is, as a comment, and the preimage stays on the card, where it is
+    // shown for exactly this purpose, rather than in a block somebody pastes.
     const id = sw.zenon?.htlcId || '<their htlc id>'
-    const preimage = sw.secretHex || '<preimage>'
-    lines.push('# The counterparty creates the Zenon HTLC. Verify it above before acting, then:')
-    lines.push(`znn-cli htlc.unlock ${id} ${preimage}${cliFlags}`)
+    lines.push(
+      ...comment(
+        'The counterparty creates the Zenon HTLC. Unlocking it publishes the preimage, ' +
+          'which is what lets them take the Bitcoin -- so it is only safe against an HTLC ' +
+          'that has passed verification, and this page will not print an unlock command: use ' +
+          'the wallet button above, which verifies the HTLC against the node before it builds ' +
+          'the block. If you must use znn-cli, press Verify HTLC above first and act only on ' +
+          'a green verdict; then htlc.unlock takes the id below and the preimage shown on the ' +
+          'card.',
+      ),
+    )
+    lines.push(...comment(`  htlc id    ${id}`))
+    lines.push('#   preimage   <the preimage shown on the card, once you hold it>')
     lines.push('')
     // The step people miss. Unlocking moves the funds to your address as an
     // unreceived block; on Zenon that is not the same as having them.
