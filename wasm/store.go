@@ -103,6 +103,21 @@ func (s *Store) Save(sw *Swap) error {
 	if err != nil {
 		return err
 	}
+	// Compare-and-set on the version, under the same lock as the write: the
+	// record being saved must be the record that was loaded, or a decision
+	// made against a stale copy would overwrite one made since. See
+	// Swap.Version.
+	if existing, ok := s.backing.Get(k); ok {
+		var stored struct {
+			Version int64 `json:"version"`
+		}
+		if json.Unmarshal([]byte(existing), &stored) == nil && stored.Version != sw.Version {
+			return fmt.Errorf("%w: swap %s is at version %d in the store and this write is from "+
+				"version %d, so something else changed it in the meantime; nothing was written",
+				ErrStaleWrite, sw.ID, stored.Version, sw.Version)
+		}
+	}
+	sw.Version++
 	data, err := json.MarshalIndent(sw, "", "  ")
 	if err != nil {
 		return err
@@ -112,6 +127,10 @@ func (s *Store) Save(sw *Swap) error {
 	}
 	return nil
 }
+
+// ErrStaleWrite is returned by Save when the record changed since it was
+// loaded. The caller's copy is out of date; load again and decide again.
+var ErrStaleWrite = errors.New("stale write")
 
 // Delete removes a swap record permanently. This destroys the ephemeral private
 // key, which is the only key that can spend the contract, and localStorage has

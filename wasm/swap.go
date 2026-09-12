@@ -56,10 +56,18 @@ type Swap struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
-	Network   string    `json:"network"`
-	Role      Role      `json:"role"`
-	Leg       Leg       `json:"leg"`
-	State     State     `json:"state"`
+	// Version counts saves. Every call into this module runs on a goroutine of
+	// its own and most of them load a record, decide something, and save it;
+	// two of those interleaved would let the second save erase the first --
+	// a refresh recording funding, then an audit that loaded before it saving
+	// a contract over it, and the freeze on a funded contract with it. So Save
+	// refuses a record whose version is not the one in the store, and the
+	// loser is told to look again rather than allowed to overwrite.
+	Version int64  `json:"version,omitempty"`
+	Network string `json:"network"`
+	Role    Role   `json:"role"`
+	Leg     Leg    `json:"leg"`
+	State   State  `json:"state"`
 
 	// Secret is set when this side is the initiator, or once it has been
 	// extracted from the counterparty's on-chain redeem. It is the one field

@@ -408,11 +408,18 @@ export interface RebuildRequest {
   destAddr?: string
   feeRate?: number
   secretHex?: string
+  /** Build even when the file does not record what the funding output pays
+   *  (a file from before that was recorded). This page reaches no node, so
+   *  the check cannot run here; a wrong contract yields a transaction the
+   *  network refuses, and nothing more. */
+  allowUnboundFunding?: boolean
 }
 
 export interface RebuildResult {
   /** Decided by the contract and the key, not by what was asked for. */
   action: 'redeem' | 'refund'
+  /** Set when the spend rests on an assumption this page could not check. */
+  warning?: string
   swapId: string
   network: string
   contractAddr: string

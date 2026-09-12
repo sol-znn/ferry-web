@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -1268,5 +1269,333 @@ func TestFundingIsBoundToTheScriptItPays(t *testing.T) {
 	if _, err := m.Redeem(context.Background(), unbound.ID, ""); err == nil ||
 		!strings.Contains(err.Error(), "fetch funding transaction") {
 		t.Errorf("an unbound funding was spent without reading the chain: %v", err)
+	}
+}
+
+// countingStorage counts writes, so a test can prove that a resend of what the
+// record already holds writes nothing.
+type countingStorage struct {
+	*MemStorage
+	sets int
+}
+
+func (c *countingStorage) Set(key, value string) error {
+	c.sets++
+	return c.MemStorage.Set(key, value)
+}
+
+// racingStorage runs a hook the first time a key is read, which is how a test
+// makes "something else saved between my load and my save" happen on demand.
+type racingStorage struct {
+	*MemStorage
+	onGet func()
+	fired bool
+}
+
+func (r *racingStorage) Get(key string) (string, bool) {
+	v, ok := r.MemStorage.Get(key)
+	if !r.fired && r.onGet != nil {
+		r.fired = true
+		r.onGet()
+	}
+	return v, ok
+}
+
+// A save is a compare-and-set on the record's version. Two copies loaded, one
+// saved: the other is stale, and saving it is refused rather than allowed to
+// overwrite what the first decided.
+func TestSaveRefusesAStaleCopy(t *testing.T) {
+	st := NewStore(NewMemStorage())
+	sw := &Swap{ID: "aabbccddeeff00aa", Network: "regtest", Role: RoleInitiator, Leg: LegSend, Key: mustKey(t)}
+	if err := st.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	a, _ := st.Load(sw.ID)
+	b, _ := st.Load(sw.ID)
+	a.State = StateFunded
+	if err := st.Save(a); err != nil {
+		t.Fatalf("saving the first copy: %v", err)
+	}
+	b.State = StateDraft
+	err := st.Save(b)
+	if !errors.Is(err, ErrStaleWrite) {
+		t.Fatalf("saving a stale copy: got %v, want ErrStaleWrite", err)
+	}
+	got, _ := st.Load(sw.ID)
+	if got.State != StateFunded {
+		t.Errorf("the stale copy overwrote the fresh one: state %q", got.State)
+	}
+	// Reloading and deciding again is the way through.
+	c, _ := st.Load(sw.ID)
+	if err := st.Save(c); err != nil {
+		t.Errorf("a reloaded copy was refused: %v", err)
+	}
+}
+
+// The race the review described, made deterministic: an audit loads the swap
+// before a refresh records its funding, and saves after. The freeze it checked
+// against was the unfunded record; the save must lose, and the funding and the
+// original contract must stand.
+func TestAuditCannotRaceAStake(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	_, hash, _ := NewSecret()
+	backing := NewMemStorage()
+	m := &Manager{Store: NewStore(backing), Chain: &stubBackend{feeRate: 2}, Network: "regtest"}
+	sw, err := m.Create(CreateParams{Role: RoleParticipant, Leg: LegReceive, AmountSats: 400_000,
+		DestAddr: regtestDest, SecretHashHex: hex.EncodeToString(hash)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	first, _ := BuildContract(mustKey(t).PKH, sw.Key.PKH, lock, hash)
+	second, _ := BuildContract(mustKey(t).PKH, sw.Key.PKH, lock, hash)
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(first)); err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	firstAddr, _ := ContractAddress(first, params)
+	pkScript, _ := contractPkScript(first, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+
+	// The audit's own store reads through a storage that, on the first read,
+	// lets a refresh through another store on the same backing record the
+	// funding -- exactly a goroutine interleaving, without the goroutines.
+	racing := &racingStorage{MemStorage: backing}
+	racing.onGet = func() {
+		other := &Manager{Store: NewStore(backing), Network: "regtest", Chain: &stubBackend{
+			feeRate: 2,
+			utxos:   []chain.UTXO{{TxID: txid, Vout: 0, Value: 400_000, Status: chain.Status{Confirmed: true, BlockHeight: 100}}},
+			rawTx:   map[string]string{txid: rawHex},
+		}}
+		if _, err := other.Refresh(context.Background(), sw.ID); err != nil {
+			t.Fatalf("the interleaved refresh failed: %v", err)
+		}
+	}
+	auditor := &Manager{Store: NewStore(racing), Network: "regtest"}
+	_, err = auditor.AuditContract(sw.ID, hex.EncodeToString(second))
+	if err == nil {
+		t.Fatal("an audit that loaded before the funding saved over it")
+	}
+	if !errors.Is(err, ErrStaleWrite) {
+		t.Errorf("refused, but not as a stale write: %v", err)
+	}
+	got, _ := m.Store.Load(sw.ID)
+	if !bytes.Equal(got.Contract, first) || got.ContractAddr != firstAddr.String() {
+		t.Errorf("the losing audit replaced the contract: %x", got.Contract)
+	}
+	if got.Funding == nil || got.Funding.TxID != txid {
+		t.Errorf("the funding the refresh recorded was lost: %+v", got.Funding)
+	}
+	// And now that the record is funded, the same audit is refused by the
+	// freeze itself, on a fresh load.
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(second)); err == nil ||
+		!strings.Contains(err.Error(), "cannot change now") {
+		t.Errorf("after the race, the freeze did not hold: %v", err)
+	}
+}
+
+// A resend of what the record already holds is answered, not written.
+func TestIdenticalResendsWriteNothing(t *testing.T) {
+	counting := &countingStorage{MemStorage: NewMemStorage()}
+	m := &Manager{Store: NewStore(counting), Network: "regtest"}
+	_, hash, _ := NewSecret()
+	recv, err := m.Create(CreateParams{Role: RoleParticipant, Leg: LegReceive, AmountSats: 400_000,
+		DestAddr: regtestDest, SecretHashHex: hex.EncodeToString(hash)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	contract, _ := BuildContract(mustKey(t).PKH, recv.Key.PKH, time.Now().Add(48*time.Hour).Unix(), hash)
+	if _, err := m.AuditContract(recv.ID, hex.EncodeToString(contract)); err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	send, err := m.Create(CreateParams{Role: RoleInitiator, Leg: LegSend, AmountSats: 400_000, DestAddr: regtestDest})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pkh := mustKey(t).PKHHex()
+	if _, err := m.SetCounterpartyPKH(send.ID, pkh); err != nil {
+		t.Fatalf("SetCounterpartyPKH: %v", err)
+	}
+	before := counting.sets
+	if _, err := m.AuditContract(recv.ID, hex.EncodeToString(contract)); err != nil {
+		t.Errorf("identical contract refused: %v", err)
+	}
+	if _, err := m.SetCounterpartyPKH(send.ID, pkh); err != nil {
+		t.Errorf("identical pkh refused: %v", err)
+	}
+	if counting.sets != before {
+		t.Errorf("identical resends wrote %d time(s)", counting.sets-before)
+	}
+}
+
+// The binding is required before the refund is pre-signed, before a
+// pre-signed refund is broadcast, and when a larger output replaces the
+// funding. A chain that cannot say what the output pays holds all three.
+func TestRefundsAreBuiltAndBroadcastOnlyOverBoundFunding(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	lock := time.Now().Add(-time.Hour).Unix() + 48*3600 // 47h out: not yet refundable
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+	mined := chain.Status{Confirmed: true, BlockHeight: 100}
+
+	// 1. Refresh adopts a SHORT funding whose transaction cannot be read: no
+	//    pre-signed refund, one log line over two polls, the binding left for
+	//    later. Short, so the scan keeps looking and a covering output can
+	//    replace it below -- once the agreed amount is covered, it stops.
+	shortHex, shortTxid := fundingTxPaying(t, pkScript, 100_000)
+	backend := &stubBackend{feeRate: 2, utxos: []chain.UTXO{{TxID: shortTxid, Vout: 0, Value: 100_000, Status: mined}}}
+	m := newManager(t, backend)
+	sw := &Swap{
+		ID: "aabbccddeeff00bb", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateAwaitingFunding, Key: refund, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding == nil {
+		t.Fatal("funding not adopted")
+	}
+	if got.RefundTx != nil {
+		t.Error("a refund was pre-signed over a funding that could not be bound")
+	}
+	if got.Funding.PkScriptHex != "" {
+		t.Error("a binding was recorded from nowhere")
+	}
+	got, _ = m.Refresh(context.Background(), sw.ID)
+	notes := 0
+	for _, ev := range got.Events {
+		if strings.Contains(ev.Message, "not pre-signed yet") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Errorf("the holding note was logged %d times over two refreshes, want once", notes)
+	}
+
+	// 2. The transaction becomes readable: bound, and pre-signed.
+	backend.rawTx = map[string]string{shortTxid: shortHex}
+	got, err = m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.RefundTx == nil || !strings.EqualFold(got.Funding.PkScriptHex, hex.EncodeToString(pkScript)) {
+		t.Fatalf("once readable, the funding was not bound and pre-signed: %+v", got.Funding)
+	}
+
+	// 3. A covering output appears. Unreadable: switched to, the old refund
+	//    dropped, and nothing re-signed until it is bound. Readable: bound and
+	//    pre-signed again.
+	backend.utxos = append(backend.utxos, chain.UTXO{TxID: txid, Vout: 0, Value: 400_000, Status: mined})
+	got, err = m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding.TxID != txid || got.RefundTx != nil || got.Funding.PkScriptHex != "" {
+		t.Errorf("an unreadable covering output was not switched to unbound and un-signed: %+v, refund %v",
+			got.Funding, got.RefundTx != nil)
+	}
+	backend.rawTx[txid] = rawHex
+	got, _ = m.Refresh(context.Background(), sw.ID)
+	if got.RefundTx == nil || !strings.EqualFold(got.Funding.PkScriptHex, hex.EncodeToString(pkScript)) {
+		t.Errorf("a readable covering output was not bound and pre-signed: %+v", got.Funding)
+	}
+
+	// 4. A pre-signed refund from before the binding, over a record whose
+	//    contract no longer matches what the output pays: not broadcast.
+	past := time.Now().Add(-time.Hour).Unix()
+	if past < LockTimeThreshold {
+		t.Skip("clock before the locktime threshold")
+	}
+	stale := &Swap{
+		ID: "aabbccddeeff00cc", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+		State: StateFunded, Key: refund, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: past,
+		Funding:  &FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true},
+		RefundTx: &SpendResult{TxID: "dd", RawHex: "00"},
+	}
+	// The chain says the output pays a different script.
+	otherScript, _ := contractPkScript(func() []byte { c, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash); return c }(), params)
+	otherHex, _ := fundingTxPaying(t, otherScript, 400_000)
+	backend.rawTx[txid] = otherHex
+	if err := m.Store.Save(stale); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	broadcasts := backend.broadcasts
+	if _, err := m.Refund(context.Background(), stale.ID, ""); err == nil ||
+		!strings.Contains(err.Error(), "not this swap") {
+		t.Errorf("a pre-signed refund over a mismatched funding was broadcast or refused for another reason: %v", err)
+	}
+	if backend.broadcasts != broadcasts {
+		t.Error("something was broadcast")
+	}
+	// And unreadable: refused, not broadcast.
+	delete(backend.rawTx, txid)
+	stale2, _ := m.Store.Load(stale.ID)
+	stale2.Funding.PkScriptHex = ""
+	if err := m.Store.Save(stale2); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := m.Refund(context.Background(), stale.ID, ""); err == nil ||
+		!strings.Contains(err.Error(), "fetch funding transaction") {
+		t.Errorf("a pre-signed refund over an unreadable funding was broadcast: %v", err)
+	}
+	if backend.broadcasts != broadcasts {
+		t.Error("something was broadcast")
+	}
+}
+
+// A recovery file from before the binding cannot be checked offline. It is
+// built only on the user's say-so, with a warning; a file that carries the
+// binding is checked, and a mismatch is refused regardless.
+func TestRebuildNeedsConsentForAnUnboundFile(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	wif, err := btcutil.NewWIF(refund.PrivKey(), params, true)
+	if err != nil {
+		t.Fatalf("WIF: %v", err)
+	}
+	file := func(pkScriptHex string) string {
+		f := map[string]any{
+			"swapId": "aabbccddeeff00dd", "network": "regtest",
+			"contractHex": hex.EncodeToString(contract), "contractAddr": addr.String(),
+			"lockTime": lock, "privateKeyWIF": wif.String(), "destAddr": regtestDest,
+			"funding": map[string]any{"txid": "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a",
+				"vout": 0, "value": 400000, "pkScriptHex": pkScriptHex},
+		}
+		raw, _ := json.Marshal(f)
+		return string(raw)
+	}
+	if _, err := Rebuild(RebuildRequest{File: file("")}); err == nil ||
+		!strings.Contains(err.Error(), "does not record what the funding output pays") {
+		t.Errorf("an unbound file was built without consent: %v", err)
+	}
+	res, err := Rebuild(RebuildRequest{File: file(""), AllowUnboundFunding: true})
+	if err != nil {
+		t.Fatalf("an unbound file was refused with consent: %v", err)
+	}
+	if res.Warning == "" || res.RawHex == "" {
+		t.Errorf("built with consent but without a warning: %+v", res)
+	}
+	res, err = Rebuild(RebuildRequest{File: file(hex.EncodeToString(pkScript))})
+	if err != nil || res.Warning != "" {
+		t.Errorf("a bound, matching file: err %v warning %q", err, res.Warning)
+	}
+	otherScript, _ := contractPkScript(func() []byte { c, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash); return c }(), params)
+	if _, err := Rebuild(RebuildRequest{File: file(hex.EncodeToString(otherScript)), AllowUnboundFunding: true}); err == nil ||
+		!strings.Contains(err.Error(), "not this") {
+		t.Errorf("a file whose funding pays another script was built: %v", err)
 	}
 }

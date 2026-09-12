@@ -274,8 +274,15 @@ ok('recovery exports the key as WIF', typeof rec.privateKeyWIF === 'string' && r
 ok('recovery carries the contract', rec.contractHex === built.contractHex)
 ok('recovery names the contract address', rec.contractAddr === built.contractAddr)
 
-const rebuilt = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5})
+// The hand-edited funding above does not say what the output pays, as a
+// file from before that was recorded would not. Offline, that cannot be
+// checked, so the rebuild is refused until the user says to build anyway --
+// and then says on the result what it assumed.
+const unbound = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5})
+ok('a file that does not record what the funding pays is not built unasked', /does not record what the funding output pays/.test(unbound.error ?? ''), unbound.error ?? 'built')
+const rebuilt = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5, allowUnboundFunding: true})
 ok('a refund is rebuilt from the file alone', rebuilt.action === 'refund', rebuilt.error)
+ok('and carries the assumption it was built on', /assumption/.test(rebuilt.warning ?? ''), rebuilt.warning)
 ok('it is signed and serialised', /^[0-9a-f]+$/.test(rebuilt.rawHex ?? ''))
 ok('it pays the address in the file', rebuilt.destAddr === DEST)
 ok('it is not yet valid, and says so', Boolean(rebuilt.notYet), JSON.stringify(rebuilt.validFrom))
@@ -284,13 +291,13 @@ ok('value plus fee equals the funding', rebuilt.value + rebuilt.fee === 400000)
 
 // The refund branch holds this key. Asking it to redeem must be refused with an
 // explanation rather than producing a transaction no node will accept.
-const wrongBranch = await call('rebuild', {file: JSON.stringify(rec), secretHex: 'ab'.repeat(32)})
+const wrongBranch = await call('rebuild', {file: JSON.stringify(rec), secretHex: 'ab'.repeat(32), allowUnboundFunding: true})
 ok('redeeming with a refund-branch key is refused', /REFUND branch/.test(wrongBranch.error ?? ''), wrongBranch.error)
 
 // A file whose stated address does not hash to its own contract has been
 // edited, and neither half can be trusted.
 const tampered = {...rec, contractAddr: '2N1SP7r92ZZJvYEQ4Xv7oVvGkVh7YQnCF8u'}
-const refused = await call('rebuild', {file: JSON.stringify(tampered)})
+const refused = await call('rebuild', {file: JSON.stringify(tampered), allowUnboundFunding: true})
 ok('an inconsistent recovery file is refused', /inconsistent/.test(refused.error ?? ''), refused.error)
 
 // Same for the locktime. "valid from" is what tells the user when to broadcast,
@@ -298,7 +305,7 @@ ok('an inconsistent recovery file is refused', /inconsistent/.test(refused.error
 // out of the contract — and a file that disagrees with its own contract about
 // when the refund branch opens is refused rather than quietly preferred.
 const movedLock = {...rec, lockTime: rec.lockTime + 86400}
-const refusedLock = await call('rebuild', {file: JSON.stringify(movedLock)})
+const refusedLock = await call('rebuild', {file: JSON.stringify(movedLock), allowUnboundFunding: true})
 ok(
   "a recovery file whose lockTime disagrees with its contract is refused",
   /inconsistent/.test(refusedLock.error ?? ''),

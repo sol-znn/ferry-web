@@ -645,17 +645,29 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 	// the refund so the user can save it. Recovery must not depend on ferry
 	// still being around later.
 	if sw.Funding != nil && sw.RefundTx == nil && sw.Leg == LegSend && sw.DestAddr != "" {
-		feeRate, err := backend.FeeRate(ctx, 6)
-		if err != nil {
-			feeRate = 2.0
-		}
-		refund, err := BuildRefund(sw.Contract, *sw.Funding, sw.Key, sw.DestAddr, feeRate, params)
-		if err != nil {
-			sw.log("could not pre-sign refund: %v", err)
+		// Not before the funding is bound to what it pays. A pre-signed refund
+		// is the one artefact that must be right with nobody watching, and a
+		// signature over a spend of an output that pays another script is a
+		// recovery file that does not recover. Tried again on the next poll.
+		if err := bindFunding(ctx, backend, sw, params); err != nil {
+			// Once, not per poll: the fetch error itself was logged when the
+			// funding was adopted.
+			if !loggedOnce(sw, noBindingNote) {
+				sw.log("%s", noBindingNote)
+			}
 		} else {
-			sw.RefundTx = refund
-			sw.log("refund transaction pre-signed (%s, %d sat fee); it becomes broadcastable at %s",
-				refund.TxID, refund.Fee, time.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))
+			feeRate, err := backend.FeeRate(ctx, 6)
+			if err != nil {
+				feeRate = 2.0
+			}
+			refund, err := BuildRefund(sw.Contract, *sw.Funding, sw.Key, sw.DestAddr, feeRate, params)
+			if err != nil {
+				sw.log("could not pre-sign refund: %v", err)
+			} else {
+				sw.RefundTx = refund
+				sw.log("refund transaction pre-signed (%s, %d sat fee); it becomes broadcastable at %s",
+					refund.TxID, refund.Fee, time.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))
+			}
 		}
 	}
 
@@ -986,6 +998,11 @@ func payoutAddress(sw *Swap, asked string) (string, error) {
 	return sw.DestAddr, nil
 }
 
+// noBindingNote is logged once while a funding cannot be bound to what it
+// pays, which is what holds the pre-signed refund back.
+const noBindingNote = "the refund is not pre-signed yet: the funding transaction could not be read " +
+	"to confirm the output pays this contract; it is tried again on the next refresh"
+
 // bindFunding records, from the funding transaction itself, the script and
 // value of the output this swap adopted, and refuses if that script is not
 // this swap's contract. The outpoint is the swap's; what it pays is the
@@ -1142,18 +1159,21 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 	if err != nil {
 		return nil, err
 	}
+	params, err := sw.Params()
+	if err != nil {
+		return nil, err
+	}
+	// Bound before anything is broadcast -- the pre-signed refund included,
+	// because it may have been signed by a release that did not bind, over a
+	// contract a session has since replaced.
+	if err := bindFunding(ctx, backend, sw, params); err != nil {
+		return nil, fmt.Errorf("not refunding: %w", err)
+	}
 	// The pre-signed refund, when there is one, was built to this same address
 	// the moment funding appeared — the only address it could have been built
 	// to, now that one cannot be swapped out from under it.
 	spend := sw.RefundTx
 	if spend == nil {
-		params, err := sw.Params()
-		if err != nil {
-			return nil, err
-		}
-		if err := bindFunding(ctx, backend, sw, params); err != nil {
-			return nil, fmt.Errorf("not refunding: %w", err)
-		}
 		feeRate, err := backend.FeeRate(ctx, 6)
 		if err != nil {
 			feeRate = 2.0

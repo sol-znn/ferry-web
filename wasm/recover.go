@@ -53,6 +53,13 @@ type RebuildRequest struct {
 	// SecretHex builds a redeem instead of a refund. Empty falls back to a
 	// secret already inside the file, if there is one.
 	SecretHex string `json:"secretHex"`
+	// AllowUnboundFunding builds even when the file does not record what the
+	// funding output pays -- a file from before that was recorded. This page
+	// reaches no node, so the binding cannot be read here; without it a spend
+	// is built for the contract in the file and, if that is not the contract
+	// the output pays, the network refuses it. Nothing is lost by trying, but
+	// the user is told rather than left to find out.
+	AllowUnboundFunding bool `json:"allowUnboundFunding"`
 }
 
 // RebuildResult is the rebuilt spend plus everything the CLI printed beside it.
@@ -83,6 +90,9 @@ type RebuildResult struct {
 	// PresignedRefundHex is whatever the file already carried, so the page can
 	// offer the no-rebuild path first: broadcasting it needs no decisions.
 	PresignedRefundHex string `json:"presignedRefundHex,omitempty"`
+	// Warning is set when the spend was built on an assumption the page could
+	// not check -- see RebuildRequest.AllowUnboundFunding.
+	Warning string `json:"warning,omitempty"`
 }
 
 // Rebuild reconstructs a spending transaction from a recovery file.
@@ -178,6 +188,31 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			time.Unix(rf.LockTime, 0).UTC().Format(time.RFC3339))
 	}
 
+	// Whether the funding output pays this contract is recorded in newer files
+	// and checked by the signer. An older file does not say, and this page
+	// cannot ask a node, so it is built only on the user's say-so, with a
+	// warning on the result -- never silently, because a contract swapped out
+	// under a funding (see AuditContract) is exactly what such a file could be
+	// carrying.
+	var warning string
+	if rf.Funding.PkScriptHex == "" {
+		if !req.AllowUnboundFunding {
+			return nil, errors.New("this file does not record what the funding output pays, so " +
+				"it cannot be checked offline that the output is this contract's. A newer " +
+				"recovery file from the swap would carry that. To build anyway -- if the contract " +
+				"is not the one that was funded, the network will refuse the transaction and " +
+				"nothing is lost -- tick the box and rebuild")
+		}
+		assumed, err := contractPkScript(contract, params)
+		if err != nil {
+			return nil, err
+		}
+		rf.Funding.PkScriptHex = hex.EncodeToString(assumed)
+		warning = "Built on the assumption that the funding output pays this contract, which " +
+			"this file does not record and this page could not check. If the network refuses " +
+			"the transaction, the contract in this file is not the one that was funded."
+	}
+
 	canRedeem := bytes.Equal(details.PkhRedeem, key.PKH)
 	canRefund := bytes.Equal(details.PkhRefund, key.PKH)
 	if !canRedeem && !canRefund {
@@ -225,6 +260,7 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 	}
 
 	res := &RebuildResult{
+		Warning:            warning,
 		Action:             action,
 		SwapID:             rf.SwapID,
 		Network:            rf.Network,
