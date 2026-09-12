@@ -56,10 +56,18 @@ type Swap struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
-	Network   string    `json:"network"`
-	Role      Role      `json:"role"`
-	Leg       Leg       `json:"leg"`
-	State     State     `json:"state"`
+	// Version counts saves. Every call into this module runs on a goroutine of
+	// its own and most of them load a record, decide something, and save it;
+	// two of those interleaved would let the second save erase the first --
+	// a refresh recording funding, then an audit that loaded before it saving
+	// a contract over it, and the freeze on a funded contract with it. So Save
+	// refuses a record whose version is not the one in the store, and the
+	// loser is told to look again rather than allowed to overwrite.
+	Version int64  `json:"version,omitempty"`
+	Network string `json:"network"`
+	Role    Role   `json:"role"`
+	Leg     Leg    `json:"leg"`
+	State   State  `json:"state"`
 
 	// Secret is set when this side is the initiator, or once it has been
 	// extracted from the counterparty's on-chain redeem. It is the one field
@@ -526,6 +534,51 @@ func (s *Swap) withdrawStaleVerdict() {
 	if !loggedOnce(s, msg) {
 		s.log("%s", msg)
 	}
+}
+
+// ContractCommitted reports whether anything has been staked on this swap's
+// Bitcoin contract as it stands -- money seen or sent to its address, a Zenon
+// HTLC created against its locktime, a refund pre-signed to spend its output
+// -- and says what. Past that point the contract's bytes are the swap's
+// identity: a "corrected" contract arriving afterwards, over a session or by
+// hand, would be stored beside a funding outpoint that still pays the OLD
+// script, and every spend built from then on would be for the wrong one. So
+// AuditContract and SetCounterpartyPKH treat a byte-identical resend as
+// nothing new and refuse anything else once this is true.
+func (s *Swap) ContractCommitted() (bool, string) {
+	switch {
+	case len(s.Contract) == 0:
+		return false, ""
+	case s.Funding != nil:
+		return true, "funding has been seen at its address"
+	case s.FundingBroadcast != nil:
+		return true, "a payment to its address has been sent from this browser"
+	case s.RefundTx != nil:
+		return true, "a refund of it has been pre-signed"
+	case strings.TrimSpace(s.Zenon.HtlcID) != "":
+		return true, "a Zenon HTLC exists against its locktime"
+	case s.State != StateDraft && s.State != StateAwaitingFunding:
+		return true, "the swap is past waiting for funding"
+	}
+	return false, ""
+}
+
+// FundingBound reports that the funding output has been read off its own
+// transaction and pays this swap's contract. It is what releases anything
+// built or offered against the funding: a redeem, a pre-signed refund, a
+// Zenon leg locked in answer to it. A script recorded is not enough on its
+// own; it has to be THIS contract's, judged now, against the contract the
+// record holds now.
+func (s *Swap) FundingBound() bool {
+	if s.Funding == nil || s.Funding.PkScriptHex == "" || len(s.Contract) == 0 {
+		return false
+	}
+	params, err := s.Params()
+	if err != nil {
+		return false
+	}
+	bound, err := s.Funding.bindsTo(s.Contract, params)
+	return err == nil && bound
 }
 
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the

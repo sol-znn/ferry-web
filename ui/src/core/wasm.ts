@@ -241,9 +241,32 @@ export async function wasmCall<T>(method: string, body?: unknown): Promise<T> {
   } catch {
     throw new Error(`the signing engine returned something that is not JSON: ${raw.slice(0, 200)}`)
   }
-  const err = (data as {error?: string}).error
+  const doc = data as {error?: string; code?: string}
   // A zenon verification failure is a successful call carrying an `error`
-  // alongside its result, so only a bare error document is thrown.
-  if (err && Object.keys(data as object).length === 1) throw new Error(err)
+  // alongside its result, so only a bare error document -- error, and at most
+  // a code naming its kind -- is thrown.
+  if (doc.error && Object.keys(doc).every((k) => k === 'error' || k === 'code')) {
+    throw new EngineError(doc.error, doc.code)
+  }
   return data as T
+}
+
+/**
+ * An error the engine returned, with the kind it named, if it named one. The
+ * one kind so far is `stale`: the record changed under the call and the engine
+ * declined to overwrite it, so the caller makes the call again against the
+ * record as it now is.
+ */
+export class EngineError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+  ) {
+    super(message)
+    this.name = 'EngineError'
+  }
+}
+
+export function isStaleWrite(e: unknown): boolean {
+  return e instanceof EngineError && e.code === 'stale'
 }

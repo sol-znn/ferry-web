@@ -101,7 +101,9 @@ async function syncSwap(sw: Swap): Promise<boolean> {
   try {
     latest = await api.refresh(sw.id, settings.value)
   } catch {
-    // See above.
+    // See above. That includes a stale write, which means another call
+    // changed the record while this refresh ran; the record it would have
+    // written is superseded, and the next tick refreshes the newer one.
   }
   const now = latest ?? sw
   if (hasZenon.value && verifyDue(now)) {

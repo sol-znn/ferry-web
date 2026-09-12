@@ -53,6 +53,13 @@ type RebuildRequest struct {
 	// SecretHex builds a redeem instead of a refund. Empty falls back to a
 	// secret already inside the file, if there is one.
 	SecretHex string `json:"secretHex"`
+	// AllowUnboundFunding builds even when the file does not record what the
+	// funding output pays -- a file from before that was recorded. This page
+	// reaches no node, so the binding cannot be read here; without it a spend
+	// is built for the contract in the file and, if that is not the contract
+	// the output pays, the network refuses it. Nothing is lost by trying, but
+	// the user is told rather than left to find out.
+	AllowUnboundFunding bool `json:"allowUnboundFunding"`
 }
 
 // RebuildResult is the rebuilt spend plus everything the CLI printed beside it.
@@ -83,6 +90,9 @@ type RebuildResult struct {
 	// PresignedRefundHex is whatever the file already carried, so the page can
 	// offer the no-rebuild path first: broadcasting it needs no decisions.
 	PresignedRefundHex string `json:"presignedRefundHex,omitempty"`
+	// Warning is set when the spend was built on an assumption the page could
+	// not check -- see RebuildRequest.AllowUnboundFunding.
+	Warning string `json:"warning,omitempty"`
 }
 
 // Rebuild reconstructs a spending transaction from a recovery file.
@@ -186,8 +196,9 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 	}
 
 	var (
-		spend  *SpendResult
-		action string
+		spend   *SpendResult
+		action  string
+		warning string
 	)
 	secret := strings.TrimSpace(req.SecretHex)
 	switch {
@@ -197,6 +208,18 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			"becomes valid once the locktime passes")
 
 	case secret != "" || (canRedeem && rf.SecretHex != ""):
+		// A redeem carries the preimage, and a redeem of an output that does
+		// not pay this contract is an invalid transaction that still shows the
+		// preimage to whatever it is submitted to. So a redeem needs the
+		// binding, full stop; there is no "build anyway" for it. A newer
+		// recovery file from the swap carries the binding.
+		if rf.Funding.PkScriptHex == "" {
+			return nil, errors.New("this file does not record what the funding output pays, and a " +
+				"redeem cannot be built without that: a redeem carries the preimage, and an " +
+				"invalid one submitted anywhere still reveals it. Use a recovery file downloaded " +
+				"from the swap after its funding was seen, which records the binding, or redeem " +
+				"from the swap's card")
+		}
 		preimage := secret
 		if preimage == "" {
 			preimage = rf.SecretHex
@@ -217,6 +240,28 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			"contract can refund it")
 
 	default:
+		// A refund reveals nothing. If this file does not record what the
+		// output pays -- a file from before that was recorded -- it can be
+		// built on the user's say-so: a wrong contract yields a transaction
+		// the network refuses, and nothing more is lost. Never silently.
+		if rf.Funding.PkScriptHex == "" {
+			if !req.AllowUnboundFunding {
+				return nil, errors.New("this file does not record what the funding output pays, so " +
+					"it cannot be checked offline that the output is this contract's. A newer " +
+					"recovery file from the swap would carry that. To build the refund anyway -- " +
+					"a refund reveals nothing, so if the contract is not the one that was funded " +
+					"the network refuses the transaction and nothing is lost -- tick the box and " +
+					"rebuild")
+			}
+			assumed, aerr := contractPkScript(contract, params)
+			if aerr != nil {
+				return nil, aerr
+			}
+			rf.Funding.PkScriptHex = hex.EncodeToString(assumed)
+			warning = "Built on the assumption that the funding output pays this contract, which " +
+				"this file does not record and this page could not check. If the network refuses " +
+				"the transaction, the contract in this file is not the one that was funded."
+		}
 		spend, err = BuildRefund(contract, *rf.Funding, key, to, rate, params)
 		if err != nil {
 			return nil, err
@@ -225,6 +270,7 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 	}
 
 	res := &RebuildResult{
+		Warning:            warning,
 		Action:             action,
 		SwapID:             rf.SwapID,
 		Network:            rf.Network,

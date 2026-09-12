@@ -103,15 +103,105 @@ func (s *Store) Save(sw *Swap) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(sw, "", "  ")
+	// Compare-and-set on the version, under the same lock as the write: the
+	// record being saved must be the record that was loaded, or a decision
+	// made against a stale copy would overwrite one made since. See
+	// Swap.Version. The lock is this process's; across browser tabs, which
+	// each run a module of their own over the same localStorage, the same
+	// guarantee comes from the Web Lock every call is made under -- see
+	// main_js.go.
+	existing, ok := s.backing.Get(k)
+	switch {
+	case ok:
+		var stored struct {
+			Version int64 `json:"version"`
+		}
+		if json.Unmarshal([]byte(existing), &stored) == nil && stored.Version != sw.Version {
+			return fmt.Errorf("%w: swap %s is at version %d in the store and this write is from "+
+				"version %d, so something else changed it in the meantime; nothing was written",
+				ErrStaleWrite, sw.ID, stored.Version, sw.Version)
+		}
+	case sw.Version != 0:
+		// A record that has been saved before and is not there now was
+		// deleted in the meantime. Writing it would bring it back, key and
+		// all, over the user's decision to destroy it.
+		return fmt.Errorf("%w: swap %s was deleted in the meantime; nothing was written",
+			ErrStaleWrite, sw.ID)
+	}
+	// The version advances on the copy being written, and on the caller's
+	// only once the write has happened: a write that failed must leave the
+	// caller holding the version it loaded, or its next attempt is refused as
+	// stale by its own doing.
+	next := *sw
+	next.Version = sw.Version + 1
+	data, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := s.backing.Set(k, string(data)); err != nil {
 		return fmt.Errorf("could not save swap %s: %w", sw.ID, err)
 	}
+	sw.Version = next.Version
 	return nil
 }
+
+// SaveIfAbsent writes a swap only if no record with its id exists, and says
+// whether it did -- the existence check and the write under one lock, so an
+// import cannot decide "absent" and then overwrite a record created in
+// between.
+func (s *Store) SaveIfAbsent(sw *Swap) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k, err := s.key(sw.ID)
+	if err != nil {
+		return false, err
+	}
+	// A record that is there but cannot be read is not a record: a backup is
+	// exactly what restores one, and "already here" would leave it unusable.
+	if existing, exists := s.backing.Get(k); exists {
+		var probe Swap
+		if json.Unmarshal([]byte(existing), &probe) == nil && probe.validate() == nil {
+			return false, nil
+		}
+	}
+	next := *sw
+	next.Version = sw.Version + 1
+	data, err := json.MarshalIndent(&next, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := s.backing.Set(k, string(data)); err != nil {
+		return false, fmt.Errorf("could not save swap %s: %w", sw.ID, err)
+	}
+	sw.Version = next.Version
+	return true, nil
+}
+
+// DeleteIf removes a swap only if `allowed` accepts the record as it is at
+// the moment of removal -- the decision and the removal under one lock, so a
+// swap cannot become worth keeping between the two.
+func (s *Store) DeleteIf(id string, allowed func(*Swap) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	k, err := s.key(id)
+	if err != nil {
+		return err
+	}
+	sw, err := s.load(id)
+	if err != nil {
+		return err
+	}
+	if err := allowed(sw); err != nil {
+		return err
+	}
+	return s.backing.Remove(k)
+}
+
+// ErrStaleWrite is returned by Save when the record changed since it was
+// loaded. The caller's copy is out of date; load again and decide again.
+var ErrStaleWrite = errors.New("stale write")
 
 // Delete removes a swap record permanently. This destroys the ephemeral private
 // key, which is the only key that can spend the contract, and localStorage has
@@ -235,14 +325,17 @@ func (s *Store) Import(data []byte) (added, skipped, rejected int, err error) {
 			problems = append(problems, fmt.Sprintf("%q: %v", sw.ID, verr))
 			continue
 		}
-		if _, lerr := s.Load(sw.ID); lerr == nil {
-			skipped++
-			continue
-		}
-		if serr := s.Save(sw); serr != nil {
+		// Existence and write under one lock: "already here" is decided at the
+		// moment of writing, never a moment before.
+		wrote, serr := s.SaveIfAbsent(sw)
+		if serr != nil {
 			// Storage itself failed -- almost always the quota. Unlike a bad
 			// record this does not get better by moving to the next one.
 			return added, skipped, rejected, serr
+		}
+		if !wrote {
+			skipped++
+			continue
 		}
 		added++
 	}

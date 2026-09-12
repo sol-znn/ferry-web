@@ -128,6 +128,12 @@ type swapView struct {
 	// engine cannot disagree about what counts as missing (a zero amount
 	// does).
 	MissingZenonTerms []MissingTerm `json:"missingZenonTerms,omitempty"`
+	// FundingBound says the funding output has been read off its own
+	// transaction and pays this swap's contract. Until it is, the funding is
+	// something seen in a listing, not something to act on: the card offers
+	// no Zenon action and no redeem against it, and Refresh tries again on
+	// every poll.
+	FundingBound bool `json:"fundingBound,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -190,6 +196,7 @@ func view(sw *Swap) *swapView {
 		RedeemTx:                  sw.RedeemTx,
 		Zenon:                     sw.Zenon,
 		Events:                    sw.Events,
+		FundingBound:              sw.FundingBound(),
 	}
 	if len(sw.Contract) > 0 {
 		v.ContractHex = hex.EncodeToString(sw.Contract)
@@ -290,7 +297,14 @@ func (a *API) Call(method string, body []byte) []byte {
 }
 
 func errorJSON(err error) []byte {
-	raw, merr := json.Marshal(map[string]string{"error": err.Error()})
+	doc := map[string]string{"error": err.Error()}
+	// A stale write is the one error a caller acts on by kind rather than by
+	// reading it: the record changed under the call, so the call is made again
+	// against the record as it now is. Named, so no caller has to match text.
+	if errors.Is(err, ErrStaleWrite) {
+		doc["code"] = "stale"
+	}
+	raw, merr := json.Marshal(doc)
 	if merr != nil {
 		return []byte(`{"error":"the error could not be encoded"}`)
 	}
@@ -751,15 +765,17 @@ func handleDelete(_ context.Context, a *API, body []byte) (any, error) {
 	if err := decode(body, &req); err != nil {
 		return nil, err
 	}
-	sw, err := a.Store.Load(req.ID)
+	// The risk is judged on the record as it is when it is removed, under the
+	// store's lock, so a swap cannot become worth keeping -- funded, say --
+	// between the decision and the deletion.
+	err := a.Store.DeleteIf(req.ID, func(sw *Swap) error {
+		if risk := sw.DeletionRisk(); risk != "" && !req.Force {
+			return fmt.Errorf("%s Deleting destroys the only key that can spend it, and there "+
+				"is no undo. Download this swap's recovery file first if you have not already", risk)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if risk := sw.DeletionRisk(); risk != "" && !req.Force {
-		return nil, fmt.Errorf("%s Deleting destroys the only key that can spend it, and there "+
-			"is no undo. Download this swap's recovery file first if you have not already", risk)
-	}
-	if err := a.Store.Delete(req.ID); err != nil {
 		return nil, err
 	}
 	return map[string]any{"deleted": req.ID}, nil
