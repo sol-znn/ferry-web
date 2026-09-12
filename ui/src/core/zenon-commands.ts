@@ -50,6 +50,29 @@ export function comment(text: string): string[] {
   return text.split(/\r\n|\r|\n/).map((l) => `# ${l}`)
 }
 
+/**
+ * A value as one POSIX shell word: single-quoted, with any single quote inside
+ * it written as the quote-escape-quote idiom. Nothing else in a single-quoted
+ * word is special to a shell -- not `$`, not a backtick, not a space, not a
+ * newline -- so whatever the value holds, the shell hands it to znn-cli as one
+ * argument. Every value that reaches a runnable line goes through this. The
+ * values are already validated upstream (a Zenon address, a token standard, a
+ * plain decimal, hex, a URL); this is what makes that validation not the only
+ * thing standing between a stranger's field and a terminal.
+ */
+export function shellWord(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The placeholders a person fills in themselves -- which keystore, which
+ * account, the passphrase -- are printed as placeholders, unquoted, so they
+ * look like what they are. Everything with a value is quoted.
+ */
+function word(value: string | undefined, placeholder: string): string {
+  return value ? shellWord(value) : placeholder
+}
+
 /** How the printed commands should name the user's own signing account. */
 export interface CommandContext {
   /** The Zenon node this browser is set to, translated to znn-cli's transport. */
@@ -79,8 +102,8 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
 
   // -k names the keystore (its file name, or the address it holds), -i the
   // account index inside it, -p the passphrase and -u the node.
-  const node = ctx.nodeURL ? ` -u ${ctx.nodeURL}` : ' -u <wss://your-node:35998>'
-  const cliFlags = ` -k ${self || '<your keystore>'} -i <account index> -p <passphrase>${node}`
+  const node = ` -u ${word(ctx.nodeURL, '<wss://your-node:35998>')}`
+  const cliFlags = ` -k ${word(self, '<your keystore>')} -i <account index> -p <passphrase>${node}`
 
   lines.push(`# znn-cli — ${ZNN_CLI_URL}`)
   lines.push('')
@@ -152,10 +175,25 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
           ` needs ${hours}h. Use the Syrius extension, which has no cap.`,
       )
     } else {
-      lines.push(
-        `znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1` +
-          ` ${sw.secretHashHex}${cliFlags}`,
+      // Runnable only once every term of the trade is on the swap. With a
+      // term still a placeholder the same line is printed as a comment: a
+      // command that is nearly right is a command somebody runs without
+      // reading, and `<amount>` in a shell is a redirection, not a hint.
+      const complete = Boolean(
+        sw.zenon?.peerAddress && sw.zenon?.amountDisplay && hours && sw.secretHashHex,
       )
+      const create =
+        `znn-cli htlc.create ${word(sw.zenon?.peerAddress, '<counterparty z1 address>')}` +
+        ` ${shellWord(token)} ${word(sw.zenon?.amountDisplay, '<amount>')}` +
+        ` ${hours ? shellWord(String(hours)) : '<hours>'} 1` +
+        ` ${word(sw.secretHashHex, '<hashlock>')}${cliFlags}`
+      if (complete) {
+        lines.push(create)
+      } else {
+        lines.push('# Not runnable yet: a term of the trade is still missing from this swap.')
+        lines.push('# Add it on the card and this line becomes a command:')
+        lines.push(...comment(create))
+      }
       lines.push('')
       lines.push('# It will print an id. Paste that into "Zenon HTLC id" above and verify it —')
       lines.push('# verifying your own HTLC is how you catch a typo before they act on it.')
@@ -172,7 +210,11 @@ export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
     }
     lines.push('')
     lines.push('# If the swap stalls, reclaim after expiry:')
-    lines.push(`znn-cli htlc.reclaim ${sw.zenon?.htlcId || '<your htlc id>'}${cliFlags}`)
+    if (sw.zenon?.htlcId) {
+      lines.push(`znn-cli htlc.reclaim ${shellWord(sw.zenon.htlcId)}${cliFlags}`)
+    } else {
+      lines.push(...comment(`znn-cli htlc.reclaim <your htlc id>${cliFlags}`))
+    }
   } else {
     // The counterparty sends ZNN, so they create the Zenon HTLC, and this user
     // unlocks it -- which publishes the preimage. The wallet button will not
