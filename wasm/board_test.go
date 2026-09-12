@@ -973,6 +973,29 @@ func TestBoardTimesMustBePlausible(t *testing.T) {
 		}
 	}
 
+	// The window's edges, exactly: the floor and the ceiling are inside it,
+	// one second beyond either is not, and a day ahead is the last instant
+	// a take is read.
+	if err := plausibleBoardTime(boardTimeFloor); err != nil {
+		t.Errorf("the floor itself is refused: %v", err)
+	}
+	if err := plausibleBoardTime(boardTimeCeiling); err != nil {
+		t.Errorf("the ceiling itself is refused: %v", err)
+	}
+	if err := plausibleBoardTime(boardTimeFloor - 1); err == nil {
+		t.Error("one second before the floor is admitted")
+	}
+	if err := plausibleBoardTime(boardTimeCeiling + 1); err == nil {
+		t.Error("one second after the ceiling is admitted")
+	}
+	edge := time.Now().Add(takeFuture).Unix()
+	if _, err := OpenTake(maker, stamped(edge-5)); err != nil {
+		t.Errorf("a take five seconds inside the future bound was refused: %v", err)
+	}
+	if _, err := OpenTake(maker, stamped(edge+5)); err == nil {
+		t.Error("a take five seconds beyond the future bound was opened")
+	}
+
 	post := samplePost("abcd1234")
 	post.CreatedAt, post.ExpiresAt = time.Now().Unix(), time.Now().Add(24*time.Hour).Unix()
 	if err := post.validate(); err != nil {
