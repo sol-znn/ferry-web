@@ -16,7 +16,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/zenon/ferry-web/wasm/chain"
@@ -874,13 +873,16 @@ func TestRedeemWillNotRevealTheSecretForAShortFunding(t *testing.T) {
 		t.Fatalf("ContractAddress: %v", err)
 	}
 	const txid = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	pkScript, _ := contractPkScript(contract, params)
 	receiving := func(id string, role Role, value int64) *Swap {
 		return &Swap{
 			ID: id, Network: "regtest", Role: role, Leg: LegReceive, State: StateFunded,
 			Key: redeemKey, Secret: secret, SecretHash: hash, AmountSats: 400_000,
 			Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest,
 			LockTime: lock,
-			Funding:  &FundingOutput{TxID: txid, Vout: 0, Value: value, Confirmed: true},
+			// Bound: the binding is F05's concern and is tested there.
+			Funding: &FundingOutput{TxID: txid, Vout: 0, Value: value, Confirmed: true,
+				PkScriptHex: hex.EncodeToString(pkScript)},
 		}
 	}
 	backend := &stubBackend{feeRate: 2}
@@ -958,14 +960,18 @@ func TestShortFundingHoldClearsOnlyForACoveringOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContractAddress: %v", err)
 	}
-	const shortTx = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
-	const secondShortTx = "1111111111111111111111111111111111111111111111111111111111111111"
-	const fullTx = "2222222222222222222222222222222222222222222222222222222222222222"
+	// Real transactions the stub can serve, so each adopted output binds to
+	// the contract (F05) and the redeem is judged on the amount alone.
+	pkScript, _ := contractPkScript(contract, params)
+	shortHex, shortTx := fundingTxPaying(t, pkScript, 150_000)
+	secondHex, secondShortTx := fundingTxPaying(t, pkScript, 300_000)
+	fullHex, fullTx := fundingTxPaying(t, pkScript, 400_000)
 	mined := chain.Status{Confirmed: true, BlockHeight: 100}
 	backend := &stubBackend{
 		feeRate:  2,
 		utxos:    []chain.UTXO{{TxID: shortTx, Vout: 0, Value: 150_000, Status: mined}},
 		txStatus: map[string]chain.Status{shortTx: mined, secondShortTx: mined, fullTx: mined},
+		rawTx:    map[string]string{shortTx: shortHex, secondShortTx: secondHex, fullTx: fullHex},
 	}
 	m := newManager(t, backend)
 	sw := &Swap{
@@ -1086,6 +1092,10 @@ func TestAuditFreezesTheContractOnceCommitted(t *testing.T) {
 	got, _ = m.Store.Load(sw.ID)
 	got.Funding = &FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a", Value: 400_000, Confirmed: true}
 	got.Zenon.HtlcID = "9f"
+	// Complete terms, or the verdict is withdrawn on load (F03) and the
+	// "nothing changed" comparison below has something to compare against.
+	got.Zenon.PeerAddress = "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s"
+	got.Zenon.AmountDisplay = "10"
 	got.Zenon.Verified = true
 	if err := m.Store.Save(got); err != nil {
 		t.Fatalf("Save: %v", err)

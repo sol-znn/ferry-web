@@ -238,12 +238,6 @@ func planCreate(ctx context.Context, mgr *Manager, sw *Swap, from string, mom *z
 			"Zenon expiry is computed from its locktime, and locking ZNN against a contract you " +
 			"have not checked is the one move this app will not help you make")
 	}
-	// An audited contract is a script; it says nothing about whether money is
-	// in it. Where this leg answers the counterparty's Bitcoin funding, that
-	// funding has to be real before ZNN is locked against it -- and real is
-	// read off the chain now, not off the record.
-	if err := requireCounterLegFunding(ctx, mgr.Chain, sw); err != nil {
-		return err
 	// Where a funding is on the record, it has to be this contract's, as the
 	// chain says -- not merely seen in a listing. A record whose funding and
 	// contract disagree is the shape a replaced contract leaves behind, and
@@ -255,6 +249,13 @@ func planCreate(ctx context.Context, mgr *Manager, sw *Swap, from string, mom *z
 			"that was funded. Nothing is locked against it until that is settled")
 	}
 
+	// An audited contract is a script; it says nothing about whether money is
+	// in it. Where this leg answers the counterparty's Bitcoin funding, that
+	// funding has to be real before ZNN is locked against it -- and real is
+	// read off the chain now, not off the record.
+	if err := requireCounterLegFunding(ctx, mgr.Chain, sw); err != nil {
+		return err
+	}
 	peer := strings.TrimSpace(sw.Zenon.PeerAddress)
 	if peer == "" {
 		return errors.New("this swap has no counterparty Zenon address, so there is nobody to " +

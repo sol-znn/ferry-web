@@ -534,6 +534,8 @@ func (s *Swap) withdrawStaleVerdict() {
 	if !loggedOnce(s, msg) {
 		s.log("%s", msg)
 	}
+}
+
 // ContractCommitted reports whether anything has been staked on this swap's
 // Bitcoin contract as it stands -- money seen or sent to its address, a Zenon
 // HTLC created against its locktime, a refund pre-signed to spend its output

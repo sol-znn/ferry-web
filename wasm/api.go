@@ -196,15 +196,7 @@ func view(sw *Swap) *swapView {
 		RedeemTx:                  sw.RedeemTx,
 		Zenon:                     sw.Zenon,
 		Events:                    sw.Events,
-		SecretArrivesOnZenon: sw.SecretArrivesOnZenon(),
-		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
-		FundingBound:         sw.FundingBound(),
-		Funding:              sw.Funding,
-		FundingBroadcast:     sw.FundingBroadcast,
-		RefundTx:             sw.RefundTx,
-		RedeemTx:             sw.RedeemTx,
-		Zenon:                sw.Zenon,
-		Events:               sw.Events,
+		FundingBound:              sw.FundingBound(),
 	}
 	if len(sw.Contract) > 0 {
 		v.ContractHex = hex.EncodeToString(sw.Contract)
