@@ -738,3 +738,27 @@ func TestUnlockLookupFailureAndZeroRepair(t *testing.T) {
 		t.Errorf("a zero amount was accepted in an offer: %v", err)
 	}
 }
+
+// An offer's Zenon address and token are held to their shape at the door,
+// like its amount: every field that can reach a printed command is a
+// stranger's input.
+func TestOfferZenonFieldsAreValidatedAtDecode(t *testing.T) {
+	base := Offer{Version: 1, Network: "regtest", FromRole: RoleInitiator, BTCLeg: LegSend,
+		SecretHash: strings.Repeat("ab", 32), PKH: strings.Repeat("cd", 20), AmountSats: 400_000}
+	good := base
+	good.ZenonAddr, good.ZenonToken = f03Mine, znn.ZnnTokenStandard
+	enc, _ := good.Encode()
+	if _, err := DecodeOffer(enc); err != nil {
+		t.Errorf("a well-formed offer was refused: %v", err)
+	}
+	for name, bad := range map[string]Offer{
+		"address with shell syntax":  func() Offer { o := base; o.ZenonAddr = "z1$(id)"; return o }(),
+		"address that is not bech32": func() Offer { o := base; o.ZenonAddr = "not an address"; return o }(),
+		"token with shell syntax":    func() Offer { o := base; o.ZenonToken = "zts1`id`"; return o }(),
+	} {
+		enc, _ := bad.Encode()
+		if _, err := DecodeOffer(enc); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
