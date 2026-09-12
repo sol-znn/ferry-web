@@ -66,7 +66,11 @@ export const DEFAULT_RELAYS = [
 
 export type RelayStatus = 'connecting' | 'open' | 'closed'
 
-type EventHandler = (ev: NostrEvent) => void
+/** Call after WASM verification and before applying the event. False means
+ *  another copy was already accepted, or this pool has been closed. */
+export type AcceptEvent = () => boolean
+
+type EventHandler = (ev: NostrEvent, accept: AcceptEvent) => void | Promise<void>
 
 interface Relay {
   url: string
@@ -90,11 +94,11 @@ export class RelayPool {
   private onEvent?: EventHandler
   private onStatus?: () => void
   /**
-   * Ids already delivered upward.
+   * Ids accepted after verification by the consumer.
    *
    * Every relay that has an event sends it, so the same message arrives three
-   * times. Deduplicating here rather than in the session means the layer above
-   * sees a conversation rather than a stream with repeats in it.
+   * times. An id from a relay is only a claim until WASM verifies the event;
+   * recording it before that would let a rejected copy suppress a valid one.
    */
   private seen = new Set<string>()
   private closed = false
@@ -158,6 +162,23 @@ export class RelayPool {
     }
   }
 
+  private async deliver(event: NostrEvent) {
+    const id = event.id
+    if (this.closed || this.seen.has(id)) return
+    try {
+      await this.onEvent?.(event, () => {
+        // Verification can overlap across relays. Claim the id synchronously
+        // after it succeeds, so only one consumer applies the verified event.
+        if (this.closed || this.seen.has(id)) return false
+        this.seen.add(id)
+        return true
+      })
+    } catch {
+      // Consumers report actionable errors. A failed handler must not break
+      // the connection or reserve an id it never accepted.
+    }
+  }
+
   private connect(relay: Relay) {
     if (this.closed) return
     relay.status = 'connecting'
@@ -193,10 +214,8 @@ export class RelayPool {
       // A relay is free to send anything. Only the shape is checked here —
       // whether it is genuine is the module's business, and it checks the
       // signature over a hash it recomputes rather than one this file passed on.
-      if (!event?.id || typeof event.content !== 'string') return
-      if (this.seen.has(event.id)) return
-      this.seen.add(event.id)
-      this.onEvent?.(event)
+      if (typeof event?.id !== 'string' || !event.id || typeof event.content !== 'string') return
+      void this.deliver(event)
     }
 
     const drop = () => {

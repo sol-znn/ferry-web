@@ -106,6 +106,10 @@ jobs:
         working-directory: ui
         run: npm run commands
 
+      - name: Relay delivery checks
+        working-directory: ui
+        run: npm run relay:delivery
+
       # Development first, so the production build is what is left in
       # ui/public/ferry.wasm and dist/ when this job ends. Each smoke run
       # follows its own build and asserts the module reports the instance that
