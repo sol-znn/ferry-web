@@ -188,31 +188,6 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			time.Unix(rf.LockTime, 0).UTC().Format(time.RFC3339))
 	}
 
-	// Whether the funding output pays this contract is recorded in newer files
-	// and checked by the signer. An older file does not say, and this page
-	// cannot ask a node, so it is built only on the user's say-so, with a
-	// warning on the result -- never silently, because a contract swapped out
-	// under a funding (see AuditContract) is exactly what such a file could be
-	// carrying.
-	var warning string
-	if rf.Funding.PkScriptHex == "" {
-		if !req.AllowUnboundFunding {
-			return nil, errors.New("this file does not record what the funding output pays, so " +
-				"it cannot be checked offline that the output is this contract's. A newer " +
-				"recovery file from the swap would carry that. To build anyway -- if the contract " +
-				"is not the one that was funded, the network will refuse the transaction and " +
-				"nothing is lost -- tick the box and rebuild")
-		}
-		assumed, err := contractPkScript(contract, params)
-		if err != nil {
-			return nil, err
-		}
-		rf.Funding.PkScriptHex = hex.EncodeToString(assumed)
-		warning = "Built on the assumption that the funding output pays this contract, which " +
-			"this file does not record and this page could not check. If the network refuses " +
-			"the transaction, the contract in this file is not the one that was funded."
-	}
-
 	canRedeem := bytes.Equal(details.PkhRedeem, key.PKH)
 	canRefund := bytes.Equal(details.PkhRefund, key.PKH)
 	if !canRedeem && !canRefund {
@@ -221,8 +196,9 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 	}
 
 	var (
-		spend  *SpendResult
-		action string
+		spend   *SpendResult
+		action  string
+		warning string
 	)
 	secret := strings.TrimSpace(req.SecretHex)
 	switch {
@@ -232,6 +208,18 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			"becomes valid once the locktime passes")
 
 	case secret != "" || (canRedeem && rf.SecretHex != ""):
+		// A redeem carries the preimage, and a redeem of an output that does
+		// not pay this contract is an invalid transaction that still shows the
+		// preimage to whatever it is submitted to. So a redeem needs the
+		// binding, full stop; there is no "build anyway" for it. A newer
+		// recovery file from the swap carries the binding.
+		if rf.Funding.PkScriptHex == "" {
+			return nil, errors.New("this file does not record what the funding output pays, and a " +
+				"redeem cannot be built without that: a redeem carries the preimage, and an " +
+				"invalid one submitted anywhere still reveals it. Use a recovery file downloaded " +
+				"from the swap after its funding was seen, which records the binding, or redeem " +
+				"from the swap's card")
+		}
 		preimage := secret
 		if preimage == "" {
 			preimage = rf.SecretHex
@@ -252,6 +240,28 @@ func Rebuild(req RebuildRequest) (*RebuildResult, error) {
 			"contract can refund it")
 
 	default:
+		// A refund reveals nothing. If this file does not record what the
+		// output pays -- a file from before that was recorded -- it can be
+		// built on the user's say-so: a wrong contract yields a transaction
+		// the network refuses, and nothing more is lost. Never silently.
+		if rf.Funding.PkScriptHex == "" {
+			if !req.AllowUnboundFunding {
+				return nil, errors.New("this file does not record what the funding output pays, so " +
+					"it cannot be checked offline that the output is this contract's. A newer " +
+					"recovery file from the swap would carry that. To build the refund anyway -- " +
+					"a refund reveals nothing, so if the contract is not the one that was funded " +
+					"the network refuses the transaction and nothing is lost -- tick the box and " +
+					"rebuild")
+			}
+			assumed, aerr := contractPkScript(contract, params)
+			if aerr != nil {
+				return nil, aerr
+			}
+			rf.Funding.PkScriptHex = hex.EncodeToString(assumed)
+			warning = "Built on the assumption that the funding output pays this contract, which " +
+				"this file does not record and this page could not check. If the network refuses " +
+				"the transaction, the contract in this file is not the one that was funded."
+		}
 		spend, err = BuildRefund(contract, *rf.Funding, key, to, rate, params)
 		if err != nil {
 			return nil, err

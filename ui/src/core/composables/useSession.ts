@@ -545,12 +545,22 @@ async function applyValue(what: string, fn: () => Promise<unknown>) {
     say('in', `Received ${what}, but this session is not attached to a swap yet.`, false)
     return
   }
-  try {
-    await fn()
-    changed.value += 1
-    say('in', `Accepted ${what} — it matches this swap.`, true)
-  } catch (e) {
-    say('in', `REFUSED ${what}: ${e instanceof Error ? e.message : String(e)}`, false)
+  // A stale write is not a refusal of the value: the record changed under the
+  // call -- a refresh landed -- and the engine declined to overwrite it. The
+  // call is simply made again, against the record as it now is, and only a
+  // second such answer is reported.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fn()
+      changed.value += 1
+      say('in', `Accepted ${what} — it matches this swap.`, true)
+      return
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/stale write/.test(msg) && attempt < 2) continue
+      say('in', `REFUSED ${what}: ${msg}`, false)
+      return
+    }
   }
 }
 

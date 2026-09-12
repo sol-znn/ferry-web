@@ -89,7 +89,9 @@ func call(api *API) func(js.Value, []js.Value) any {
 							resolve.Invoke(string(errorJSON(panicErr(r))))
 						}
 					}()
-					resolve.Invoke(string(api.Call(method, body)))
+					resolve.Invoke(string(underStoreLock(func() []byte {
+						return api.Call(method, body)
+					})))
 				}()
 				return nil
 			}))
@@ -137,3 +139,59 @@ func (e panicError) Error() string {
 }
 
 func panicErr(v any) error { return panicError{v: v} }
+
+// underStoreLock runs one call while holding the browser's Web Lock for this
+// instance's records, and returns its answer.
+//
+// Every call loads a record, decides something, and saves it, and the
+// store's own lock and version check keep two such calls in ONE module from
+// interleaving. Two tabs are two modules over the same localStorage, with a
+// mutex each and no way to see the other's, so a stale audit in one tab could
+// still save over a funding the other had just recorded. The Web Locks API is
+// the one primitive the browser offers that spans tabs of an origin, so every
+// call is made under it: one at a time, for this instance's swaps, across every
+// tab. The cost is that calls queue behind each other -- a refresh in one tab
+// holds an audit in another for as long as its node takes -- which is what
+// correctness costs here.
+//
+// The lock is named for the storage prefix, so the development and production
+// instances on one origin do not wait on each other. Where the API is missing
+// -- Node running the smoke test, an old browser -- the call runs unlocked,
+// exactly as before.
+func underStoreLock(fn func() []byte) []byte {
+	nav := js.Global().Get("navigator")
+	if nav.Type() != js.TypeObject {
+		return fn()
+	}
+	locks := nav.Get("locks")
+	if locks.Type() != js.TypeObject || locks.Get("request").Type() != js.TypeFunction {
+		return fn()
+	}
+	out := make(chan []byte, 1)
+	// The callback must return a promise and not block: it is invoked from the
+	// browser's event loop, and Go code that blocks there deadlocks the module.
+	// The work runs on a goroutine; the promise it resolves is what the browser
+	// holds the lock open for.
+	var holder js.Func
+	holder = js.FuncOf(func(js.Value, []js.Value) any {
+		var exec js.Func
+		exec = js.FuncOf(func(_ js.Value, args []js.Value) any {
+			release := args[0]
+			go func() {
+				defer exec.Release()
+				defer holder.Release()
+				defer func() {
+					if r := recover(); r != nil {
+						out <- errorJSON(panicErr(r))
+					}
+					release.Invoke()
+				}()
+				out <- fn()
+			}()
+			return nil
+		})
+		return js.Global().Get("Promise").New(exec)
+	})
+	locks.Call("request", "ferry:"+StorageKeyPrefix(), holder)
+	return <-out
+}

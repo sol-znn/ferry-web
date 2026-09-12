@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, ref} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {UploadIcon} from '@lucide/vue'
 import {
   Badge,
@@ -122,6 +122,10 @@ async function onFile(ev: Event) {
   result.value = null
   error.value = ''
 }
+// Consent is about one file. A different file, loaded or pasted, starts over.
+watch(fileText, () => {
+  allowUnbound.value = false
+})
 
 async function rebuild() {
   error.value = ''
@@ -322,9 +326,11 @@ async function rebuild() {
         >
           <input v-model="allowUnbound" type="checkbox" class="mt-0.5" />
           <span>
-            Build anyway. This file does not record what the funding output pays, and this page
-            cannot ask a node, so the spend is built for the contract in the file. If that is not
-            the contract that was funded, the network refuses the transaction and nothing is lost.
+            Build the refund anyway. This file does not record what the funding output pays, and
+            this page cannot ask a node, so the refund is built for the contract in the file. A
+            refund reveals nothing: if that is not the contract that was funded, the network refuses
+            the transaction and nothing is lost. A redeem is never built this way, because a redeem
+            carries the preimage.
           </span>
         </label>
         <Button class="justify-self-start" :disabled="busy || !fileText.trim()" @click="rebuild">

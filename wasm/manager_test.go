@@ -1514,17 +1514,18 @@ func TestRefundsAreBuiltAndBroadcastOnlyOverBoundFunding(t *testing.T) {
 	if past < LockTimeThreshold {
 		t.Skip("clock before the locktime threshold")
 	}
+	// The chain says the output pays a different script: a real transaction,
+	// under its own id, paying another contract.
+	otherScript, _ := contractPkScript(func() []byte { c, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash); return c }(), params)
+	otherHex, otherTxid := fundingTxPaying(t, otherScript, 400_000)
+	backend.rawTx[otherTxid] = otherHex
 	stale := &Swap{
 		ID: "aabbccddeeff00cc", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
 		State: StateFunded, Key: refund, SecretHash: hash, AmountSats: 400_000,
 		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: past,
-		Funding:  &FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true},
+		Funding:  &FundingOutput{TxID: otherTxid, Vout: 0, Value: 400_000, Confirmed: true},
 		RefundTx: &SpendResult{TxID: "dd", RawHex: "00"},
 	}
-	// The chain says the output pays a different script.
-	otherScript, _ := contractPkScript(func() []byte { c, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash); return c }(), params)
-	otherHex, _ := fundingTxPaying(t, otherScript, 400_000)
-	backend.rawTx[txid] = otherHex
 	if err := m.Store.Save(stale); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -1537,7 +1538,7 @@ func TestRefundsAreBuiltAndBroadcastOnlyOverBoundFunding(t *testing.T) {
 		t.Error("something was broadcast")
 	}
 	// And unreadable: refused, not broadcast.
-	delete(backend.rawTx, txid)
+	delete(backend.rawTx, otherTxid)
 	stale2, _ := m.Store.Load(stale.ID)
 	stale2.Funding.PkScriptHex = ""
 	if err := m.Store.Save(stale2); err != nil {
@@ -1584,10 +1585,39 @@ func TestRebuildNeedsConsentForAnUnboundFile(t *testing.T) {
 	}
 	res, err := Rebuild(RebuildRequest{File: file(""), AllowUnboundFunding: true})
 	if err != nil {
-		t.Fatalf("an unbound file was refused with consent: %v", err)
+		t.Fatalf("an unbound refund was refused with consent: %v", err)
 	}
-	if res.Warning == "" || res.RawHex == "" {
-		t.Errorf("built with consent but without a warning: %+v", res)
+	if res.Action != "refund" || res.Warning == "" || res.RawHex == "" {
+		t.Errorf("built with consent but not as a warned refund: %+v", res)
+	}
+	// The redeem key, with the preimage: a redeem carries the preimage, and
+	// an invalid one shows it to whatever it is submitted to. No consent path.
+	secret, _, _ := NewSecret()
+	redeemHash := SHA256(secret)
+	redeemContract, _ := BuildContract(refund.PKH, redeem.PKH, lock, redeemHash)
+	redeemAddr, _ := ContractAddress(redeemContract, params)
+	redeemWIF, _ := btcutil.NewWIF(redeem.PrivKey(), params, true)
+	redeemFile := func(pkScriptHex string) string {
+		f := map[string]any{
+			"swapId": "aabbccddeeff00de", "network": "regtest",
+			"contractHex": hex.EncodeToString(redeemContract), "contractAddr": redeemAddr.String(),
+			"lockTime": lock, "privateKeyWIF": redeemWIF.String(), "destAddr": regtestDest,
+			"secretHex": hex.EncodeToString(secret),
+			"funding": map[string]any{"txid": "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a",
+				"vout": 0, "value": 400000, "pkScriptHex": pkScriptHex},
+		}
+		raw, _ := json.Marshal(f)
+		return string(raw)
+	}
+	for _, consent := range []bool{false, true} {
+		if _, err := Rebuild(RebuildRequest{File: redeemFile(""), AllowUnboundFunding: consent}); err == nil ||
+			!strings.Contains(err.Error(), "carries the preimage") {
+			t.Errorf("consent=%v: an unbound redeem was built: %v", consent, err)
+		}
+	}
+	redeemScript, _ := contractPkScript(redeemContract, params)
+	if res, err := Rebuild(RebuildRequest{File: redeemFile(hex.EncodeToString(redeemScript))}); err != nil || res.Action != "redeem" {
+		t.Errorf("a bound redeem was refused: %v", err)
 	}
 	res, err = Rebuild(RebuildRequest{File: file(hex.EncodeToString(pkScript))})
 	if err != nil || res.Warning != "" {
@@ -1597,5 +1627,144 @@ func TestRebuildNeedsConsentForAnUnboundFile(t *testing.T) {
 	if _, err := Rebuild(RebuildRequest{File: file(hex.EncodeToString(otherScript)), AllowUnboundFunding: true}); err == nil ||
 		!strings.Contains(err.Error(), "not this") {
 		t.Errorf("a file whose funding pays another script was built: %v", err)
+	}
+}
+
+// The store's other decisions are made under its lock too: an import adds a
+// record only if none exists at the moment of writing, and a delete removes
+// only what is still safe to remove at the moment of removal. A write that
+// fails leaves the caller's version where it was.
+func TestStoreDecidesUnderItsLock(t *testing.T) {
+	backing := NewMemStorage()
+	st := NewStore(backing)
+	sw := &Swap{ID: "aabbccddeeff00ee", Network: "regtest", Role: RoleInitiator, Leg: LegSend, Key: mustKey(t)}
+	added, err := st.SaveIfAbsent(sw)
+	if err != nil || !added {
+		t.Fatalf("first SaveIfAbsent: added=%v err=%v", added, err)
+	}
+	// A record created in between: the second import of the same id must
+	// not overwrite it, whatever version the imported copy carries.
+	stored, _ := st.Load(sw.ID)
+	stored.State = StateFunded
+	if err := st.Save(stored); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	dup := &Swap{ID: sw.ID, Network: "regtest", Role: RoleInitiator, Leg: LegSend, Key: sw.Key, Version: stored.Version}
+	added, err = st.SaveIfAbsent(dup)
+	if err != nil || added {
+		t.Errorf("an existing record was overwritten by an import: added=%v err=%v", added, err)
+	}
+	if got, _ := st.Load(sw.ID); got.State != StateFunded {
+		t.Errorf("the existing record was replaced: state %q", got.State)
+	}
+
+	// Delete: the decision runs on the record as it is when it is removed.
+	refused := st.DeleteIf(sw.ID, func(s *Swap) error {
+		if s.State == StateFunded {
+			return errors.New("funded: keep it")
+		}
+		return nil
+	})
+	if refused == nil {
+		t.Error("a record the check refused was deleted")
+	}
+	if _, err := st.Load(sw.ID); err != nil {
+		t.Error("the record is gone after a refused delete")
+	}
+	if err := st.DeleteIf(sw.ID, func(*Swap) error { return nil }); err != nil {
+		t.Errorf("an allowed delete failed: %v", err)
+	}
+	if _, err := st.Load(sw.ID); err == nil {
+		t.Error("the record survived an allowed delete")
+	}
+
+	// A failed write does not advance the caller's version.
+	failing := NewStore(&failingSetStorage{MemStorage: backing})
+	v := &Swap{ID: "aabbccddeeff00ff", Network: "regtest", Role: RoleInitiator, Leg: LegSend, Key: mustKey(t), Version: 4}
+	if err := failing.Save(v); err == nil {
+		t.Fatal("a failing storage saved")
+	}
+	if v.Version != 4 {
+		t.Errorf("a failed write advanced the version to %d", v.Version)
+	}
+}
+
+type failingSetStorage struct{ *MemStorage }
+
+func (f *failingSetStorage) Set(string, string) error { return errors.New("quota") }
+
+// What happened on the chain is recorded even when the record changed while
+// the broadcast was in flight: the outcome is applied to the record as it now
+// is, the concurrent change is kept, and nothing is broadcast twice.
+func TestAnOutcomeSurvivesAStaleSave(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+	backing := NewMemStorage()
+	backend := &stubBackend{feeRate: 2, rawTx: map[string]string{txid: rawHex}}
+	sw := &Swap{
+		ID: "aabbccddeeff0110", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateFunded, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+		Funding: &FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true, PkScriptHex: hex.EncodeToString(pkScript)},
+	}
+	if err := NewStore(backing).Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Between Redeem's load and its save, another call archives the swap.
+	racing := &racingStorage{MemStorage: backing}
+	racing.onGet = func() {
+		other := NewStore(backing)
+		s, _ := other.Load(sw.ID)
+		s.Archived = true
+		if err := other.Save(s); err != nil {
+			t.Fatalf("interleaved save: %v", err)
+		}
+	}
+	m := &Manager{Store: NewStore(racing), Chain: backend, Network: "regtest"}
+	got, err := m.Redeem(context.Background(), sw.ID, "")
+	if err != nil {
+		t.Fatalf("Redeem after a concurrent change: %v", err)
+	}
+	if got.State != StateRedeemed || got.RedeemTx == nil {
+		t.Errorf("the outcome was not recorded: state %q", got.State)
+	}
+	if !got.Archived {
+		t.Error("the concurrent change was lost")
+	}
+	if backend.broadcasts != 1 {
+		t.Errorf("%d broadcasts, want exactly one", backend.broadcasts)
+	}
+	stored, _ := m.Store.Load(sw.ID)
+	if stored.State != StateRedeemed || !stored.Archived {
+		t.Errorf("the stored record disagrees: %+v", stored)
+	}
+}
+
+// A backend answering with a transaction other than the one asked for cannot
+// bind a funding to a script the real output does not have.
+func TestBindingRequiresTheTransactionAskedFor(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, time.Now().Add(48*time.Hour).Unix(), hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, _ := fundingTxPaying(t, pkScript, 400_000)
+	const claimed = "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a"
+	backend := &stubBackend{feeRate: 2, rawTx: map[string]string{claimed: rawHex}}
+	sw := &Swap{Network: "regtest", Contract: contract, ContractAddr: addr.String(),
+		Funding: &FundingOutput{TxID: claimed, Vout: 0, Value: 400_000}}
+	err := bindFunding(context.Background(), backend, sw, params)
+	if err == nil || !strings.Contains(err.Error(), "when asked for") {
+		t.Errorf("a substituted transaction bound the funding: %v", err)
+	}
+	if sw.Funding.PkScriptHex != "" {
+		t.Error("a binding was recorded from a substituted transaction")
 	}
 }

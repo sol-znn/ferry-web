@@ -751,15 +751,17 @@ func handleDelete(_ context.Context, a *API, body []byte) (any, error) {
 	if err := decode(body, &req); err != nil {
 		return nil, err
 	}
-	sw, err := a.Store.Load(req.ID)
+	// The risk is judged on the record as it is when it is removed, under the
+	// store's lock, so a swap cannot become worth keeping -- funded, say --
+	// between the decision and the deletion.
+	err := a.Store.DeleteIf(req.ID, func(sw *Swap) error {
+		if risk := sw.DeletionRisk(); risk != "" && !req.Force {
+			return fmt.Errorf("%s Deleting destroys the only key that can spend it, and there "+
+				"is no undo. Download this swap's recovery file first if you have not already", risk)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if risk := sw.DeletionRisk(); risk != "" && !req.Force {
-		return nil, fmt.Errorf("%s Deleting destroys the only key that can spend it, and there "+
-			"is no undo. Download this swap's recovery file first if you have not already", risk)
-	}
-	if err := a.Store.Delete(req.ID); err != nil {
 		return nil, err
 	}
 	return map[string]any{"deleted": req.ID}, nil

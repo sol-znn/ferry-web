@@ -998,6 +998,30 @@ func payoutAddress(sw *Swap, asked string) (string, error) {
 	return sw.DestAddr, nil
 }
 
+// saveOutcome records what happened on the chain. A broadcast is not undone
+// by a refusal to save it, so a save that finds the record changed in the
+// meantime -- a refresh, an archive -- reloads, applies the outcome to the
+// record as it now is, and saves that; the concurrent change is kept, the
+// outcome is not lost, and the caller gets back the record that was written.
+func (m *Manager) saveOutcome(sw *Swap, apply func(*Swap)) (*Swap, error) {
+	apply(sw)
+	for attempt := 0; ; attempt++ {
+		err := m.Store.Save(sw)
+		if err == nil {
+			return sw, nil
+		}
+		if !errors.Is(err, ErrStaleWrite) || attempt == 3 {
+			return nil, err
+		}
+		fresh, lerr := m.Store.Load(sw.ID)
+		if lerr != nil {
+			return nil, lerr
+		}
+		apply(fresh)
+		sw = fresh
+	}
+}
+
 // noBindingNote is logged once while a funding cannot be bound to what it
 // pays, which is what holds the pre-signed refund back.
 const noBindingNote = "the refund is not pre-signed yet: the funding transaction could not be read " +
@@ -1025,6 +1049,12 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 		tx, err := DecodeRawTx(raw)
 		if err != nil {
 			return fmt.Errorf("funding transaction %s: %w", f.TxID, err)
+		}
+		// The transaction served has to be the one asked for. A backend that
+		// answers with another -- one paying this contract, say -- would bind
+		// the funding to a script the real output does not have.
+		if got := tx.TxHash().String(); !strings.EqualFold(got, f.TxID) {
+			return fmt.Errorf("the backend served transaction %s when asked for %s", got, f.TxID)
 		}
 		if int(f.Vout) >= len(tx.TxOut) {
 			return fmt.Errorf("funding transaction %s has no output %d", f.TxID, f.Vout)
@@ -1120,19 +1150,19 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	if err != nil {
 		return nil, fmt.Errorf("broadcast redeem: %w", err)
 	}
-	sw.RedeemTx = spend
-	sw.State = StateRedeemed
-	// Record the address a keyless old backup was just given, so the swap names
-	// what it actually paid. payoutAddress has already refused anything that
-	// disagrees with an address the record held, so this only ever fills a gap.
-	if sw.DestAddr == "" {
-		sw.DestAddr = destAddr
-	}
-	sw.log("redeemed to %s in %s (%d sat after a %d sat fee)", destAddr, txid, spend.Value, spend.Fee)
-	if err := m.Store.Save(sw); err != nil {
-		return nil, err
-	}
-	return sw, nil
+	// From here the chain has the transaction, whatever the store says.
+	return m.saveOutcome(sw, func(s *Swap) {
+		s.RedeemTx = spend
+		s.State = StateRedeemed
+		// Record the address a keyless old backup was just given, so the swap
+		// names what it actually paid. payoutAddress has already refused
+		// anything that disagrees with an address the record held, so this
+		// only ever fills a gap.
+		if s.DestAddr == "" {
+			s.DestAddr = destAddr
+		}
+		s.log("redeemed to %s in %s (%d sat after a %d sat fee)", destAddr, txid, spend.Value, spend.Fee)
+	})
 }
 
 // Refund broadcasts the timelocked reclaim. It rebuilds the transaction at
@@ -1194,16 +1224,14 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 			"passed on your clock but not yet in the chain's median time past, which trails "+
 			"real time by about an hour -- retry shortly)", err)
 	}
-	sw.RefundTx = spend
-	sw.State = StateRefunded
-	if sw.DestAddr == "" && destAddr != "" {
-		sw.DestAddr = destAddr
-	}
-	sw.log("refunded in %s (%d sat after a %d sat fee)", txid, spend.Value, spend.Fee)
-	if err := m.Store.Save(sw); err != nil {
-		return nil, err
-	}
-	return sw, nil
+	return m.saveOutcome(sw, func(s *Swap) {
+		s.RefundTx = spend
+		s.State = StateRefunded
+		if s.DestAddr == "" && destAddr != "" {
+			s.DestAddr = destAddr
+		}
+		s.log("refunded in %s (%d sat after a %d sat fee)", txid, spend.Value, spend.Fee)
+	})
 }
 
 // zenonVerifyParams builds the expectations this swap has of its Zenon HTLC.
