@@ -1472,7 +1472,7 @@ func TestRefundsAreBuiltAndBroadcastOnlyOverBoundFunding(t *testing.T) {
 	got, _ = m.Refresh(context.Background(), sw.ID)
 	notes := 0
 	for _, ev := range got.Events {
-		if strings.Contains(ev.Message, "not pre-signed yet") {
+		if strings.Contains(ev.Message, "nothing is built or offered") {
 			notes++
 		}
 	}
@@ -1766,5 +1766,185 @@ func TestBindingRequiresTheTransactionAskedFor(t *testing.T) {
 	}
 	if sw.Funding.PkScriptHex != "" {
 		t.Error("a binding was recorded from a substituted transaction")
+	}
+}
+
+// The receiving leg too: a funding that cannot be bound is seen but not acted
+// on, and the binding is tried again on every poll until it is.
+func TestReceiveLegFundingIsNotActionableUntilBound(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+	backend := &stubBackend{feeRate: 2, utxos: []chain.UTXO{{TxID: txid, Vout: 0, Value: 400_000, Status: chain.Status{Confirmed: true, BlockHeight: 100}}}}
+	m := newManager(t, backend)
+	sw := &Swap{
+		ID: "aabbccddeeff0120", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateAwaitingFunding, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding == nil {
+		t.Fatal("funding not seen")
+	}
+	if view(got).FundingBound {
+		t.Error("an unbound funding reads as bound")
+	}
+	if _, err := m.Redeem(context.Background(), sw.ID, ""); err == nil {
+		t.Error("an unbound funding was redeemed")
+	}
+	got, _ = m.Refresh(context.Background(), sw.ID)
+	notes := 0
+	for _, ev := range got.Events {
+		if strings.Contains(ev.Message, "nothing is built or offered") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Errorf("the holding note was logged %d times, want once", notes)
+	}
+	backend.rawTx = map[string]string{txid: rawHex}
+	got, err = m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if !view(got).FundingBound {
+		t.Error("the receiving leg's funding was not bound on a later poll")
+	}
+}
+
+// An outcome is recorded only on the swap it happened to: a reloaded record
+// naming another funding or contract is refused, and a deleted one is not
+// brought back. The transaction id travels in the error either way.
+func TestAnOutcomeIsNotAttachedToAnotherIdentity(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+	otherHex, otherTxid := fundingTxPaying(t, pkScript, 500_000)
+	mk := func(id string) (*MemStorage, *stubBackend) {
+		backing := NewMemStorage()
+		backend := &stubBackend{feeRate: 2, rawTx: map[string]string{txid: rawHex, otherTxid: otherHex}}
+		sw := &Swap{
+			ID: id, Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+			State: StateFunded, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+			Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+			Funding: &FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true, PkScriptHex: hex.EncodeToString(pkScript)},
+		}
+		if err := NewStore(backing).Save(sw); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		return backing, backend
+	}
+
+	// The funding switched under the broadcast.
+	backing, backend := mk("aabbccddeeff0130")
+	racing := &racingStorage{MemStorage: backing}
+	racing.onGet = func() {
+		st := NewStore(backing)
+		s, _ := st.Load("aabbccddeeff0130")
+		s.Funding = &FundingOutput{TxID: otherTxid, Vout: 0, Value: 500_000, Confirmed: true, PkScriptHex: hex.EncodeToString(pkScript)}
+		if err := st.Save(s); err != nil {
+			t.Fatalf("interleaved save: %v", err)
+		}
+	}
+	m := &Manager{Store: NewStore(racing), Chain: backend, Network: "regtest"}
+	_, err := m.Redeem(context.Background(), "aabbccddeeff0130", "")
+	if err == nil || !strings.Contains(err.Error(), "different funding or contract") {
+		t.Errorf("an outcome was attached to a swap naming another funding: %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "was broadcast") {
+		t.Errorf("the error does not carry what happened on the chain: %v", err)
+	}
+	if backend.broadcasts != 1 {
+		t.Errorf("%d broadcasts, want one", backend.broadcasts)
+	}
+	stored, _ := NewStore(backing).Load("aabbccddeeff0130")
+	if stored.State == StateRedeemed || stored.Funding.TxID != otherTxid {
+		t.Errorf("the reloaded record was changed: %+v", stored)
+	}
+
+	// Deleted under the broadcast.
+	backing, backend = mk("aabbccddeeff0131")
+	racing = &racingStorage{MemStorage: backing}
+	racing.onGet = func() {
+		if err := NewStore(backing).Delete("aabbccddeeff0131"); err != nil {
+			t.Fatalf("interleaved delete: %v", err)
+		}
+	}
+	m = &Manager{Store: NewStore(racing), Chain: backend, Network: "regtest"}
+	_, err = m.Redeem(context.Background(), "aabbccddeeff0131", "")
+	if err == nil || !strings.Contains(err.Error(), "gone from the store") {
+		t.Errorf("a deleted swap was brought back by an outcome: %v", err)
+	}
+	if _, err := NewStore(backing).Load("aabbccddeeff0131"); err == nil {
+		t.Error("the deleted record was resurrected")
+	}
+}
+
+// A backup restores a record whose stored value no longer parses; "already
+// here" is for records that are really here.
+func TestImportRestoresACorruptRecord(t *testing.T) {
+	backing := NewMemStorage()
+	st := NewStore(backing)
+	sw := &Swap{ID: "aabbccddeeff0140", Network: "regtest", Role: RoleInitiator, Leg: LegSend, Key: mustKey(t)}
+	if err := st.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	backup, err := st.Export()
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	k, _ := st.key(sw.ID)
+	if err := backing.Set(k, "{not json"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := st.Load(sw.ID); err == nil {
+		t.Fatal("the corrupt record loaded")
+	}
+	added, skipped, rejected, err := st.Import(backup)
+	if err != nil || added != 1 || skipped != 0 || rejected != 0 {
+		t.Errorf("import over a corrupt record: added=%d skipped=%d rejected=%d err=%v", added, skipped, rejected, err)
+	}
+	if got, err := st.Load(sw.ID); err != nil || got.ID != sw.ID {
+		t.Errorf("the record was not restored: %v", err)
+	}
+	// And a record that IS here is left alone.
+	added, skipped, _, _ = st.Import(backup)
+	if added != 0 || skipped != 1 {
+		t.Errorf("a healthy record was overwritten: added=%d skipped=%d", added, skipped)
+	}
+}
+
+// The error a stale write comes back as is named, so a caller acts on the
+// kind rather than the words.
+func TestStaleWriteIsNamedOnTheWire(t *testing.T) {
+	raw := errorJSON(fmt.Errorf("wrapped: %w", ErrStaleWrite))
+	var doc map[string]string
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if doc["code"] != "stale" {
+		t.Errorf("a stale write is not named: %s", raw)
+	}
+	raw = errorJSON(errors.New("something else"))
+	plain := map[string]string{}
+	_ = json.Unmarshal(raw, &plain)
+	if _, named := plain["code"]; named {
+		t.Errorf("an ordinary error carries a code: %s", raw)
 	}
 }

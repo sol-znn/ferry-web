@@ -634,6 +634,19 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 	// double-spend away from never having happened.
 	trackFundingDepth(ctx, sw, backend)
 
+	// And what it pays, on every poll until it is known, whichever leg this
+	// is. A funding that is not bound is not acted on: the card offers no
+	// Zenon action and no redeem against it, and no refund is pre-signed. So
+	// a chain that could not be read the moment the funding appeared holds
+	// the swap, once in the log, rather than letting it move on unverified.
+	if sw.Funding != nil && sw.Funding.PkScriptHex == "" {
+		if err := bindFunding(ctx, backend, sw, params); err != nil {
+			if !loggedOnce(sw, noBindingNote) {
+				sw.log("%s", noBindingNote)
+			}
+		}
+	}
+
 	// A funded contract with nowhere to pay is the one shape where the pre-signed
 	// refund silently does not happen. Say it on the card rather than leaving the
 	// user with a recovery file that quietly has no transaction in it.
@@ -650,11 +663,7 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 		// signature over a spend of an output that pays another script is a
 		// recovery file that does not recover. Tried again on the next poll.
 		if err := bindFunding(ctx, backend, sw, params); err != nil {
-			// Once, not per poll: the fetch error itself was logged when the
-			// funding was adopted.
-			if !loggedOnce(sw, noBindingNote) {
-				sw.log("%s", noBindingNote)
-			}
+			// Already said, above, once.
 		} else {
 			feeRate, err := backend.FeeRate(ctx, 6)
 			if err != nil {
@@ -1003,7 +1012,15 @@ func payoutAddress(sw *Swap, asked string) (string, error) {
 // meantime -- a refresh, an archive -- reloads, applies the outcome to the
 // record as it now is, and saves that; the concurrent change is kept, the
 // outcome is not lost, and the caller gets back the record that was written.
-func (m *Manager) saveOutcome(sw *Swap, apply func(*Swap)) (*Swap, error) {
+//
+// The outcome belongs to one contract and one funding output -- the ones the
+// transaction spent. A reloaded record that names a different output or
+// contract is a different swap wearing the same id, and the outcome is not
+// attached to it; a record that is gone is not brought back. Either way the
+// transaction id is in the error, so what happened on the chain is not lost
+// with the record.
+func (m *Manager) saveOutcome(sw *Swap, txid string, apply func(*Swap)) (*Swap, error) {
+	contract, funding := sw.Contract, *sw.Funding
 	apply(sw)
 	for attempt := 0; ; attempt++ {
 		err := m.Store.Save(sw)
@@ -1011,11 +1028,18 @@ func (m *Manager) saveOutcome(sw *Swap, apply func(*Swap)) (*Swap, error) {
 			return sw, nil
 		}
 		if !errors.Is(err, ErrStaleWrite) || attempt == 3 {
-			return nil, err
+			return nil, fmt.Errorf("transaction %s was broadcast but could not be recorded: %w", txid, err)
 		}
 		fresh, lerr := m.Store.Load(sw.ID)
 		if lerr != nil {
-			return nil, lerr
+			return nil, fmt.Errorf("transaction %s was broadcast, but the swap is gone from the "+
+				"store and the outcome could not be recorded: %w", txid, lerr)
+		}
+		if fresh.Funding == nil || fresh.Funding.TxID != funding.TxID || fresh.Funding.Vout != funding.Vout ||
+			!bytes.Equal(fresh.Contract, contract) {
+			return nil, fmt.Errorf("transaction %s was broadcast, spending %s:%d of contract %s, but the "+
+				"swap now names a different funding or contract; the outcome was not recorded on it",
+				txid, funding.TxID, funding.Vout, sw.ContractAddr)
 		}
 		apply(fresh)
 		sw = fresh
@@ -1024,8 +1048,9 @@ func (m *Manager) saveOutcome(sw *Swap, apply func(*Swap)) (*Swap, error) {
 
 // noBindingNote is logged once while a funding cannot be bound to what it
 // pays, which is what holds the pre-signed refund back.
-const noBindingNote = "the refund is not pre-signed yet: the funding transaction could not be read " +
-	"to confirm the output pays this contract; it is tried again on the next refresh"
+const noBindingNote = "the funding transaction could not be read to confirm the output pays " +
+	"this contract, so nothing is built or offered against this funding yet; it is tried again on " +
+	"the next refresh"
 
 // bindFunding records, from the funding transaction itself, the script and
 // value of the output this swap adopted, and refuses if that script is not
@@ -1056,7 +1081,7 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 		if got := tx.TxHash().String(); !strings.EqualFold(got, f.TxID) {
 			return fmt.Errorf("the backend served transaction %s when asked for %s", got, f.TxID)
 		}
-		if int(f.Vout) >= len(tx.TxOut) {
+		if uint64(f.Vout) >= uint64(len(tx.TxOut)) {
 			return fmt.Errorf("funding transaction %s has no output %d", f.TxID, f.Vout)
 		}
 		out := tx.TxOut[f.Vout]
@@ -1151,7 +1176,7 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 		return nil, fmt.Errorf("broadcast redeem: %w", err)
 	}
 	// From here the chain has the transaction, whatever the store says.
-	return m.saveOutcome(sw, func(s *Swap) {
+	return m.saveOutcome(sw, txid, func(s *Swap) {
 		s.RedeemTx = spend
 		s.State = StateRedeemed
 		// Record the address a keyless old backup was just given, so the swap
@@ -1224,7 +1249,7 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 			"passed on your clock but not yet in the chain's median time past, which trails "+
 			"real time by about an hour -- retry shortly)", err)
 	}
-	return m.saveOutcome(sw, func(s *Swap) {
+	return m.saveOutcome(sw, txid, func(s *Swap) {
 		s.RefundTx = spend
 		s.State = StateRefunded
 		if s.DestAddr == "" && destAddr != "" {

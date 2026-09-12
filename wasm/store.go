@@ -110,7 +110,9 @@ func (s *Store) Save(sw *Swap) error {
 	// each run a module of their own over the same localStorage, the same
 	// guarantee comes from the Web Lock every call is made under -- see
 	// main_js.go.
-	if existing, ok := s.backing.Get(k); ok {
+	existing, ok := s.backing.Get(k)
+	switch {
+	case ok:
 		var stored struct {
 			Version int64 `json:"version"`
 		}
@@ -119,6 +121,12 @@ func (s *Store) Save(sw *Swap) error {
 				"version %d, so something else changed it in the meantime; nothing was written",
 				ErrStaleWrite, sw.ID, stored.Version, sw.Version)
 		}
+	case sw.Version != 0:
+		// A record that has been saved before and is not there now was
+		// deleted in the meantime. Writing it would bring it back, key and
+		// all, over the user's decision to destroy it.
+		return fmt.Errorf("%w: swap %s was deleted in the meantime; nothing was written",
+			ErrStaleWrite, sw.ID)
 	}
 	// The version advances on the copy being written, and on the caller's
 	// only once the write has happened: a write that failed must leave the
@@ -149,8 +157,13 @@ func (s *Store) SaveIfAbsent(sw *Swap) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, exists := s.backing.Get(k); exists {
-		return false, nil
+	// A record that is there but cannot be read is not a record: a backup is
+	// exactly what restores one, and "already here" would leave it unusable.
+	if existing, exists := s.backing.Get(k); exists {
+		var probe Swap
+		if json.Unmarshal([]byte(existing), &probe) == nil && probe.validate() == nil {
+			return false, nil
+		}
 	}
 	next := *sw
 	next.Version = sw.Version + 1

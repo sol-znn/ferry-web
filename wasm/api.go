@@ -128,6 +128,12 @@ type swapView struct {
 	// engine cannot disagree about what counts as missing (a zero amount
 	// does).
 	MissingZenonTerms []MissingTerm `json:"missingZenonTerms,omitempty"`
+	// FundingBound says the funding output has been read off its own
+	// transaction and pays this swap's contract. Until it is, the funding is
+	// something seen in a listing, not something to act on: the card offers
+	// no Zenon action and no redeem against it, and Refresh tries again on
+	// every poll.
+	FundingBound bool `json:"fundingBound,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -190,6 +196,15 @@ func view(sw *Swap) *swapView {
 		RedeemTx:                  sw.RedeemTx,
 		Zenon:                     sw.Zenon,
 		Events:                    sw.Events,
+		SecretArrivesOnZenon: sw.SecretArrivesOnZenon(),
+		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
+		FundingBound:         sw.Funding != nil && sw.Funding.PkScriptHex != "",
+		Funding:              sw.Funding,
+		FundingBroadcast:     sw.FundingBroadcast,
+		RefundTx:             sw.RefundTx,
+		RedeemTx:             sw.RedeemTx,
+		Zenon:                sw.Zenon,
+		Events:               sw.Events,
 	}
 	if len(sw.Contract) > 0 {
 		v.ContractHex = hex.EncodeToString(sw.Contract)
@@ -290,7 +305,14 @@ func (a *API) Call(method string, body []byte) []byte {
 }
 
 func errorJSON(err error) []byte {
-	raw, merr := json.Marshal(map[string]string{"error": err.Error()})
+	doc := map[string]string{"error": err.Error()}
+	// A stale write is the one error a caller acts on by kind rather than by
+	// reading it: the record changed under the call, so the call is made again
+	// against the record as it now is. Named, so no caller has to match text.
+	if errors.Is(err, ErrStaleWrite) {
+		doc["code"] = "stale"
+	}
+	raw, merr := json.Marshal(doc)
 	if merr != nil {
 		return []byte(`{"error":"the error could not be encoded"}`)
 	}

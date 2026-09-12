@@ -163,6 +163,10 @@ export interface Swap {
    *  this rather than from its own reading of the fields, so it and Go cannot
    *  disagree about what counts as missing (a zero amount does). */
   missingZenonTerms?: MissingZenonTerm[]
+  /** The funding has been read off its own transaction and pays this swap's
+   *  contract. Until then it is something seen in a listing, not something
+   *  to act on: no Zenon action and no redeem are offered against it. */
+  fundingBound?: boolean
 
   funding?: FundingOutput
   refundTx?: SpendResult

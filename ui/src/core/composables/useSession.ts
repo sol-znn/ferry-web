@@ -1,5 +1,6 @@
 import {computed, ref, shallowRef, watch} from 'vue'
 import {api} from '@/core/api'
+import {isStaleWrite} from '@/core/wasm'
 import {RelayPool, type NostrEvent, type RelayStatus} from '@/core/nostr'
 import {owed, type HandoffType} from '@/core/handoffs'
 import {useFerry} from '@/core/composables/useFerry'
@@ -547,18 +548,21 @@ async function applyValue(what: string, fn: () => Promise<unknown>) {
   }
   // A stale write is not a refusal of the value: the record changed under the
   // call -- a refresh landed -- and the engine declined to overwrite it. The
-  // call is simply made again, against the record as it now is, and only a
-  // second such answer is reported.
-  for (let attempt = 0; ; attempt++) {
+  // call is made once more, against the record as it now is; a second such
+  // answer is reported like any other.
+  let retried = false
+  for (;;) {
     try {
       await fn()
       changed.value += 1
       say('in', `Accepted ${what} — it matches this swap.`, true)
       return
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      if (/stale write/.test(msg) && attempt < 2) continue
-      say('in', `REFUSED ${what}: ${msg}`, false)
+      if (isStaleWrite(e) && !retried) {
+        retried = true
+        continue
+      }
+      say('in', `REFUSED ${what}: ${e instanceof Error ? e.message : String(e)}`, false)
       return
     }
   }

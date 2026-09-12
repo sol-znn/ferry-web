@@ -22,6 +22,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"syscall/js"
 )
@@ -160,11 +161,20 @@ func panicErr(v any) error { return panicError{v: v} }
 // exactly as before.
 func underStoreLock(fn func() []byte) []byte {
 	nav := js.Global().Get("navigator")
-	if nav.Type() != js.TypeObject {
-		return fn()
+	locks := js.Undefined()
+	if nav.Type() == js.TypeObject {
+		locks = nav.Get("locks")
 	}
-	locks := nav.Get("locks")
 	if locks.Type() != js.TypeObject || locks.Get("request").Type() != js.TypeFunction {
+		// No lock. Outside a browser -- Node running the smoke test -- there
+		// is one module and one tab, and the store's own lock is the whole
+		// story. Inside a browser without the API there could be two tabs,
+		// and running unlocked would be the race this exists to close; so a
+		// browser without it is refused rather than served.
+		if js.Global().Get("document").Type() == js.TypeObject {
+			return errorJSON(errors.New("this browser has no Web Locks API, which Ferry needs to " +
+				"keep two tabs from acting on one swap at once. Use a current browser"))
+		}
 		return fn()
 	}
 	out := make(chan []byte, 1)

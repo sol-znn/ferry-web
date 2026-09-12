@@ -243,7 +243,7 @@ const zenonUnlock = computed(() => {
 const zenonLegPossible = computed(
   () =>
     !props.swap.btcLegIsInitiators ||
-    Boolean(props.swap.funding) ||
+    (Boolean(props.swap.funding) && Boolean(props.swap.fundingBound)) ||
     Boolean(props.swap.zenon?.htlcId),
 )
 
@@ -333,6 +333,7 @@ const canRedeem = computed(
   () =>
     props.swap.leg === 'receive' &&
     Boolean(props.swap.funding) &&
+    Boolean(props.swap.fundingBound) &&
     Boolean(props.swap.secretHex) &&
     props.swap.state !== 'redeemed' &&
     !props.swap.redeemHeldForShortFunding,
@@ -943,6 +944,11 @@ async function downloadRecovery() {
           <span class="font-mono text-xs">{{ sats(swap.funding.value) }}</span>
           <Badge v-if="swap.fundingShort" variant="destructive" class="ml-2">
             short of the agreed {{ sats(swap.amountSats) }}
+          </Badge>
+          <!-- Seen in a listing, not yet read off its own transaction: until
+               it is, nothing is offered against it. Refresh keeps trying. -->
+          <Badge v-if="!swap.fundingBound" variant="warning" class="ml-2">
+            not yet checked against the chain
           </Badge>
           <!-- How settled it is, not merely that it arrived. A payment still in
                a mempool is one its sender can replace, and the swap's other leg
