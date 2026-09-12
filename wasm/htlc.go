@@ -196,6 +196,29 @@ func ParseContract(script []byte) (*ContractDetails, error) {
 		return nil, errors.New("refund pubkey hash is not 20 bytes")
 	}
 
+	// Everything above checks WHAT the script says. This checks HOW it says
+	// it. The tokenizer hands back a push's payload whatever opcode carried it,
+	// so a hash wrapped in OP_PUSHDATA1 reads as the right 32 bytes -- and
+	// hashes to a different P2SH address, and fails the minimal-push rule the
+	// moment a spend is run under standard policy, which is exactly how the
+	// redeem is built and how every node relays. A counterparty who funds such
+	// a contract has a refund branch that works and has handed us a redeem
+	// branch that does not. So the script is rebuilt from its parsed terms the
+	// one way this program builds it, and anything but that byte string is
+	// refused: canonical is the only encoding whose spends this program has
+	// proven, and the only one it will audit.
+	canonical, err := BuildContract(pkhRefund, pkhRedeem, locktime, secretHash)
+	if err != nil {
+		return nil, fmt.Errorf("rebuilding the contract from its terms: %w", err)
+	}
+	if !bytes.Equal(script, canonical) {
+		return nil, errors.New("script carries the atomic swap template's terms but is not its " +
+			"canonical encoding -- a push written with a longer opcode than it needs, most " +
+			"likely. Standard policy refuses to spend such a script, so the redeem this tool " +
+			"builds would be refused too while the counterparty's refund would not. Ask them " +
+			"to rebuild the contract with Ferry, or another tool that emits minimal pushes")
+	}
+
 	return &ContractDetails{
 		SecretHash: secretHash,
 		PkhRedeem:  pkhRedeem,

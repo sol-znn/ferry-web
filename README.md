@@ -251,8 +251,11 @@ goes quiet has not taken anything from you that a node cannot give back.
    secret; otherwise use the hash from the offer.
 2. Send them your pubkey hash. They build and fund the contract.
 3. Paste their contract hex and **audit** it. Ferry refuses it unless it is
-   genuinely redeemable by your key _and_ its locktime sits on the correct side
-   of your Zenon leg. This check reaches no node — it works entirely offline.
+   genuinely redeemable by your key, its locktime sits on the correct side of
+   your Zenon leg, _and_ it is the canonical encoding of the template — the
+   same terms written with a longer push opcode than they need would leave you
+   a redeem that standard policy refuses while their refund still works. This
+   check reaches no node — it works entirely offline.
 4. Create your Zenon HTLC. With the Syrius extension that is a button; without
    it, switch on **Show CLI commands** at the foot of the card for the `znn-cli`
    line, already carrying `hashType 1` and the expiry Ferry computed from the
