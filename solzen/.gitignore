@@ -1,0 +1,13 @@
+bin/
+dist/
+ui/node_modules/
+ui/public/solzen.wasm
+ui/public/wasm_exec.js
+
+# Build output, except the program's keypair: a program's address is derived
+# from it, so a rebuild that regenerated it would silently point every page at
+# an address nothing is deployed at.
+/program/target/*
+!/program/target/deploy/
+/program/target/deploy/*
+!/program/target/deploy/solzen_htlc-keypair.json

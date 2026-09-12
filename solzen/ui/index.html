@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      A static host does not let us set headers, so the policy lives in the
+      document. A meta policy is weaker in exactly one way -- frame-ancestors is
+      ignored in this form, so framing cannot be refused from here, and a host
+      that can set headers should add X-Frame-Options: DENY -- but every other
+      directive applies identically.
+
+      It matters here more than the page's simplicity suggests. localStorage on
+      this origin holds one record per swap, and each carries the per-swap Zenon
+      key and, for the initiator, the secret. There is no recovery file, so
+      those records are the swap. script-src is what decides who may read them.
+
+      Two directives are not what a template would produce:
+
+      - 'wasm-unsafe-eval' is required, because without it the browser refuses
+        to compile WebAssembly at all and the module is the entire engine.
+        Despite the name it permits WebAssembly compilation and nothing else --
+        not eval, not new Function. 'unsafe-inline' is absent and the build
+        emits no inline script, so an injected <script> of either kind does not
+        run. This is the directive doing the real work.
+
+      - connect-src is open, and that is a trade rather than an oversight. The
+        whole point of the Nodes panel is that you choose which Solana RPC and
+        which Zenon node to trust -- verifying a counterparty's leg is the one
+        place a lying node costs money -- and an allowlist here would mean this
+        page choosing for you, including a default everyone ends up on. The
+        anti-exfiltration value is given up knowingly: code that can execute on
+        this origin can read localStorage directly, so script-src is what stops
+        that code existing.
+
+      style-src allows 'unsafe-inline' because Vue writes style attributes.
+      Injected CSS cannot read a private key.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self' 'wasm-unsafe-eval';
+        style-src 'self' 'unsafe-inline';
+        font-src 'self';
+        img-src 'self' data:;
+        connect-src *;
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
+        frame-src 'none';
+        worker-src 'self';
+      "
+    />
+    <title>solzen — Solana ⇄ Zenon atomic swaps</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

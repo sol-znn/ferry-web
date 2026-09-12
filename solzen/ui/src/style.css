@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+/* A console, not a product page. Everything here is a fact about a swap that
+   someone has to be able to read carefully before pressing a button, so the
+   palette is quiet and the type is set for scanning hashes rather than for
+   selling anything. */
+@theme {
+  --color-ink: #0b0d10;
+  --color-panel: #14181d;
+  --color-panel-2: #1b2027;
+  --color-line: #262d36;
+  --color-dim: #7d8894;
+  --color-fg: #dfe5ec;
+  --color-accent: #5eead4;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+  --color-good: #4ade80;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+html, body, #app { height: 100%; }
+body {
+  background: var(--color-ink);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}

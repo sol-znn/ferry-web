@@ -1,0 +1,29 @@
+{
+  "name": "solzen-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "dev": "npm run build:wasm && vite",
+    "build": "npm run build:wasm && vite build",
+    "preview": "vite preview",
+    "program:test": "node scripts/program-test.mjs",
+    "swap:test": "node scripts/swap-test.mjs",
+    "timeout:test": "node scripts/timeout-test.mjs",
+    "plasma:test": "node scripts/plasma-test.mjs",
+    "smoke": "npm run build:wasm && node scripts/smoke.mjs",
+    "ui:test": "node scripts/ui-test.mjs",
+    "capture:escrow": "node scripts/capture-escrow.mjs"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "puppeteer-core": "^24.43.1",
+    "tailwindcss": "^4.1.13",
+    "vite": "^7.1.5"
+  }
+}

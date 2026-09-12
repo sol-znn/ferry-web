@@ -1,0 +1,67 @@
+# A local Solana chain for the Solana half of a swap.
+#
+# The Zenon half comes from go-zenon's devnet (`make devnet-up` there), which
+# this file deliberately does not try to own: the two chains are independent,
+# they are brought up and reset independently, and a swap is only interesting
+# because neither knows about the other.
+#
+# solana-test-validator rather than devnet, for the same reason ferry develops
+# against regtest rather than testnet: airdrops are unlimited, the chain resets
+# in seconds, and a timelock path does not have to wait out a public network.
+services:
+  validator:
+    image: anzaxyz/agave:v3.1.14
+    container_name: solzen-validator
+    entrypoint: ["solana-test-validator"]
+    command:
+      - --ledger=/ledger
+      - --rpc-port=8899
+      # A concrete address, not 0.0.0.0. Every protocol binds here, gossip
+      # included, and gossip refuses to advertise an unspecified address -- it
+      # panics on startup rather than picking one. Hence the fixed IP on a
+      # network of our own. The page reaches the RPC through the published port
+      # below, and Solana's JSON-RPC already answers with the permissive CORS
+      # headers a browser needs.
+      - --bind-address=172.31.0.10
+      - --dynamic-port-range=8002-8030
+      # Slot timing is left at the default: a swap's timelock arithmetic is in
+      # seconds against the chain's own clock, and a faster chain would drift
+      # that clock away from wall time, which is exactly what the timeout paths
+      # are there to check.
+      - --limit-ledger-size=50000000
+    # Agave 3.x asserts io_uring support at startup and panics without it.
+    # Docker's default seccomp profile blocks the io_uring syscalls, so the
+    # profile has to come off for this container. It is a local development
+    # chain with no secrets in it; nothing else here relaxes a sandbox.
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      solzen:
+        ipv4_address: 172.31.0.10
+    ports:
+      - "127.0.0.1:8899:8899"
+      - "127.0.0.1:8900:8900"
+    volumes:
+      - ledger:/ledger
+      - config:/root/.config/solana
+      # The build output, so `solana program deploy` inside the container can
+      # reach the .so and the keypair that fixes its address.
+      - ./program/target/deploy:/programs
+    healthcheck:
+      test: ["CMD", "solana", "--url", "http://172.31.0.10:8899", "cluster-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  solzen:
+    name: solzen
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+
+volumes:
+  ledger:
+  config:

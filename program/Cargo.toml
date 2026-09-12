@@ -1,0 +1,20 @@
+[package]
+name = "ferry-htlc"
+version = "0.1.0"
+edition = "2021"
+description = "Hashed timelock contract for ferry's Solana leg"
+license = "MIT"
+
+[dependencies]
+solana-program = "3.0"
+# `system_instruction` and the system program's own id left solana-program when
+# it was split up; this is where they live now.
+solana-system-interface = { version = "2", features = ["bincode"] }
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

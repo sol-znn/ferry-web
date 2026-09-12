@@ -1,0 +1,345 @@
+package main
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/zenon/ferry-web-v2/wasm/znn"
+)
+
+// The token an HTLC holds is as much a term of the trade as how much of it, and
+// nothing else in Verify constrains it: a counterparty can issue a token this
+// morning and lock the agreed NUMBER of units of it, satisfying the hashlock,
+// both parties, the expiry and the amount.
+func TestZenonVerifyRefusesTheWrongToken(t *testing.T) {
+	c := &znn.Client{}
+	base := func() *znn.HtlcInfo {
+		return &znn.HtlcInfo{
+			HashLocked: "z1me", TimeLocked: "z1them",
+			HashType: znn.HashTypeSHA256, KeyMaxSize: 32,
+			Amount:        "1000000000",
+			TokenStandard: znn.ZnnTokenStandard,
+		}
+	}
+	want := znn.VerifyParams{
+		ExpectRecipient: "z1me", ExpectSender: "z1them",
+		ExpectTokenStandard: znn.ZnnTokenStandard,
+		MinAmount:           big.NewInt(1_000_000_000),
+	}
+	if err := c.Verify(base(), want); err != nil {
+		t.Fatalf("rejected an HTLC holding the agreed token: %v", err)
+	}
+
+	scam := base()
+	scam.TokenStandard = "zts1scamxxxxxxxxxxxxxxxxxxx"
+	err := c.Verify(scam, want)
+	if err == nil {
+		t.Fatal("accepted an HTLC holding a token nobody agreed to")
+	}
+	if !strings.Contains(err.Error(), "zts1scam") {
+		t.Errorf("the rejection does not name the token that was found: %v", err)
+	}
+}
+
+// A swap record written before the token field was defaulted still has to
+// verify, and the creation form has always said a blank token means ZNN. If
+// AgreedToken did not resolve that, such a record would produce an empty
+// expectation -- which is the no-token-check hole all over again -- or an
+// unfixable refusal, since the token is not editable after creation.
+func TestAgreedTokenDefaultsToZnn(t *testing.T) {
+	blank := &Leg{Chain: ChainZNN, Dir: DirIn}
+	if got := blank.AgreedToken(); got != znn.ZnnTokenStandard {
+		t.Errorf("a blank token standard resolves to %q, want %q", got, znn.ZnnTokenStandard)
+	}
+	named := &Leg{Chain: ChainZNN, Dir: DirIn, Token: QsrTokenStandard}
+	if got := named.AgreedToken(); got != QsrTokenStandard {
+		t.Errorf("a named token standard resolves to %q, want %q", got, QsrTokenStandard)
+	}
+	// And the expectation handed to Verify carries it, so a record with no
+	// token still constrains which token the HTLC may hold.
+	sw := legs(RoleInitiator, ChainBTC, ChainZNN)
+	sw.In.Znn = &ZnnLeg{}
+	if got := zenonVerifyParams(sw, sw.In).ExpectTokenStandard; got != znn.ZnnTokenStandard {
+		t.Errorf("verification expects token %q, want %q", got, znn.ZnnTokenStandard)
+	}
+}
+
+// An amount that was agreed and then not compared must not come back as one
+// that matched. This is the fail-open the token-decimals lookup used to have:
+// any error there left MinAmount nil, Verify returned nil, and the card printed
+// "amount ... all match".
+func TestZenonVerifyRefusesAnUncheckableAmount(t *testing.T) {
+	c := &znn.Client{}
+	info := &znn.HtlcInfo{
+		HashLocked: "z1me", TimeLocked: "z1them",
+		HashType: znn.HashTypeSHA256, KeyMaxSize: 32, Amount: "1000000000",
+	}
+	err := c.Verify(info, znn.VerifyParams{
+		ExpectRecipient:   "z1me",
+		AmountUncheckable: "could not read token zts1... from the node",
+	})
+	if err == nil {
+		t.Fatal("reported a skipped amount check as a passed one")
+	}
+	if !strings.Contains(err.Error(), "could not be checked") {
+		t.Errorf("the rejection does not say the check was skipped: %v", err)
+	}
+}
+
+// Nothing an entry says may become one of the swap's own terms. Adopting the
+// observed token as the agreed one is what would let a rejected HTLC pass on a
+// second attempt: the first verification records the counterparty's token as
+// "what we agreed", and the second finds them equal.
+func TestVerificationNeverAdoptsTheObservedToken(t *testing.T) {
+	const scam = "zts1scamxxxxxxxxxxxxxxxxxxx"
+	for name, token := range map[string]string{
+		"a swap that named a token": znn.ZnnTokenStandard,
+		"a swap that named none":    "",
+	} {
+		sw := legs(RoleInitiator, ChainBTC, ChainZNN)
+		sw.In.Token = token
+		sw.In.Amount = "10"
+		// The write-back VerifyZenon performs, without the node round trip.
+		sw.In.Znn = &ZnnLeg{
+			HtlcID:        "aa" + strings.Repeat("00", 31),
+			ObservedToken: scam,
+			Verified:      false,
+		}
+		if sw.In.Token == scam {
+			t.Errorf("%s: the observed token became the agreed one", name)
+		}
+		if got := zenonVerifyParams(sw, sw.In).ExpectTokenStandard; got == scam {
+			t.Errorf("%s: a re-verification would now expect the counterparty's token", name)
+		}
+	}
+}
+
+// The node is asked for one entry. An answer describing a different one is not
+// the object being verified, whatever it says.
+func TestZenonVerifyRefusesAnotherEntry(t *testing.T) {
+	c := &znn.Client{}
+	info := &znn.HtlcInfo{
+		ID: "aa" + strings.Repeat("00", 31), HashLocked: "z1me",
+		HashType: znn.HashTypeSHA256, KeyMaxSize: 32, Amount: "1",
+	}
+	if err := c.Verify(info, znn.VerifyParams{ExpectID: info.ID}); err != nil {
+		t.Fatalf("rejected the entry that was asked for: %v", err)
+	}
+	if err := c.Verify(info, znn.VerifyParams{ExpectID: "bb" + strings.Repeat("00", 31)}); err == nil {
+		t.Error("accepted an answer describing a different entry")
+	}
+}
+
+// A 64-character hex string is also valid base64, decoding without complaint
+// into 48 meaningless bytes -- so "try base64, fall back to hex on error" never
+// reached the fallback and a hex hashlock failed verification against a
+// 96-character value.
+func TestHashLockAcceptsBothEncodings(t *testing.T) {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	wantHex := hex.EncodeToString(raw)
+
+	for name, encoded := range map[string]string{
+		"base64 (what a go-zenon node sends)": base64.StdEncoding.EncodeToString(raw),
+		"hex (what some tooling sends)":       wantHex,
+	} {
+		info := &znn.HtlcInfo{HashLock: encoded}
+		if got := info.HashLockHex(); got != wantHex {
+			t.Errorf("%s: HashLockHex = %s, want %s", name, got, wantHex)
+		}
+	}
+}
+
+// A locktime the parser reads as a sensible number but CHECKLOCKTIMEVERIFY
+// refuses to read at all is a contract that passes every check this program
+// makes and has a refund branch no node will ever execute. The parser is the
+// last point before funding at which that can be caught.
+func TestParseRejectsLocktimesTheScriptEngineWillNot(t *testing.T) {
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	locktime := time.Now().Add(48 * time.Hour).Unix()
+
+	good := buildTemplate(t, SecretSize, hash, redeem.PKH, locktime, refund.PKH)
+	if _, err := ParseContract(good); err != nil {
+		t.Fatalf("rejected a well-formed contract: %v", err)
+	}
+
+	// The same value, padded to eight bytes. Bitcoin's CLTV reads at most five.
+	padded := make([]byte, 8)
+	for i, v := 0, locktime; i < 8; i, v = i+1, v>>8 {
+		padded[i] = byte(v)
+	}
+	if _, err := ParseContract(templateWithRawLocktime(t, hash, redeem.PKH, padded, refund.PKH)); err == nil {
+		t.Error("accepted a locktime wider than CHECKLOCKTIMEVERIFY will read")
+	}
+
+	// Five bytes is legal for CLTV, but only when the fifth is not pure padding.
+	nonMinimal := make([]byte, 5)
+	for i, v := 0, locktime; i < 5; i, v = i+1, v>>8 {
+		nonMinimal[i] = byte(v)
+	}
+	if nonMinimal[4] != 0 {
+		t.Fatalf("test needs a locktime that fits in four bytes, got a fifth byte of %#x", nonMinimal[4])
+	}
+	if _, err := ParseContract(templateWithRawLocktime(t, hash, redeem.PKH, nonMinimal, refund.PKH)); err == nil {
+		t.Error("accepted a non-minimally-encoded locktime, which MINIMALDATA rejects")
+	}
+}
+
+// templateWithRawLocktime emits the contract shape with the locktime pushed as
+// exactly the given bytes, which ScriptBuilder.AddInt64 will not do.
+func templateWithRawLocktime(t *testing.T, hash, pkhRedeem, locktime, pkhRefund []byte) []byte {
+	t.Helper()
+	b := txscript.NewScriptBuilder()
+	b.AddOp(txscript.OP_IF)
+	b.AddOp(txscript.OP_SIZE)
+	b.AddInt64(SecretSize)
+	b.AddOp(txscript.OP_EQUALVERIFY)
+	b.AddOp(txscript.OP_SHA256)
+	b.AddData(hash)
+	b.AddOp(txscript.OP_EQUALVERIFY)
+	b.AddOp(txscript.OP_DUP)
+	b.AddOp(txscript.OP_HASH160)
+	b.AddData(pkhRedeem)
+	b.AddOp(txscript.OP_ELSE)
+	b.AddData(locktime)
+	b.AddOp(txscript.OP_CHECKLOCKTIMEVERIFY)
+	b.AddOp(txscript.OP_DROP)
+	b.AddOp(txscript.OP_DUP)
+	b.AddOp(txscript.OP_HASH160)
+	b.AddData(pkhRefund)
+	b.AddOp(txscript.OP_ENDIF)
+	b.AddOp(txscript.OP_EQUALVERIFY)
+	b.AddOp(txscript.OP_CHECKSIG)
+	script, err := b.Script()
+	if err != nil {
+		t.Fatalf("build template: %v", err)
+	}
+	return script
+}
+
+// A node that cannot answer is not a chain that disagrees.
+//
+// The two used to be recorded identically -- VerifyPending cleared, Verified
+// false -- and everything downstream reads that as an answer: useAutoRefresh
+// stops re-reading the leg, `owed` in the UI never releases the HTLC id over a
+// session because it waits on `verified`, and autopilot will not fund the
+// participant's Bitcoin leg. So one unreadable token lookup, on an HTLC that
+// was entirely correct, silently ended the swap's ability to move on its own
+// and left somebody to notice and press Send by hand.
+func TestAnUnansweredCheckLeavesTheLegPending(t *testing.T) {
+	const (
+		id     = "aa" + "00000000000000000000000000000000000000000000000000000000000000"
+		mine   = "z1me"
+		theirs = "z1them"
+	)
+	secretHash := bytes.Repeat([]byte{0xab}, 32)
+
+	// A node that knows the entry, and answers everything else asked of it
+	// except the one call `tokenOK` switches off.
+	node := func(tokenOK bool, hashLock []byte) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID     int    `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			reply := func(result any) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0", "id": req.ID, "result": result,
+				})
+			}
+			switch req.Method {
+			case "ledger.getFrontierMomentum":
+				reply(map[string]any{"height": 30000, "timestamp": time.Now().Unix()})
+			case "embedded.htlc.getById":
+				reply(map[string]any{
+					"id": id, "timeLocked": mine, "hashLocked": theirs,
+					"tokenStandard": znn.ZnnTokenStandard, "amount": "1000000000",
+					"expirationTime": time.Now().Add(48 * time.Hour).Unix(),
+					"hashType":       znn.HashTypeSHA256, "keyMaxSize": 32,
+					"hashLock": base64.StdEncoding.EncodeToString(hashLock),
+				})
+			case "embedded.token.getByZts":
+				if !tokenOK {
+					http.Error(w, "node is having a bad minute", http.StatusServiceUnavailable)
+					return
+				}
+				reply(map[string]any{
+					"name": "Zenon", "symbol": "ZNN",
+					"tokenStandard": znn.ZnnTokenStandard, "decimals": 8,
+				})
+			default:
+				http.Error(w, "unexpected method "+req.Method, http.StatusNotFound)
+			}
+		}))
+	}
+
+	// An outgoing Zenon leg is this user's own HTLC -- the one whose id has to
+	// reach the counterparty, which is where the stall was felt.
+	verify := func(t *testing.T, srv *httptest.Server) *Swap {
+		t.Helper()
+		m := &Manager{Store: NewStore(NewMemStorage()), Znn: znn.New(srv.URL), Network: "regtest"}
+		sw := &Swap{
+			ID: "abcdef0123456789", Network: "regtest",
+			Role: RoleInitiator, SecretHash: secretHash,
+			Out: &Leg{Chain: ChainZNN, Dir: DirOut, Amount: "10",
+				Token: znn.ZnnTokenStandard, SelfAddr: mine, PeerAddr: theirs,
+				Znn: &ZnnLeg{HtlcID: id}},
+			In: &Leg{Chain: ChainBTC, Dir: DirIn, Amount: "400000", Base: "400000",
+				SelfAddr: regtestDest, Btc: &BtcLeg{}},
+		}
+		if err := m.Store.Save(sw); err != nil {
+			t.Fatalf("could not save the swap: %v", err)
+		}
+		got, _, err := m.VerifyZenon(t.Context(), sw.ID, DirOut, id)
+		if err == nil {
+			t.Fatal("accepted an HTLC it could not fully check")
+		}
+		if got == nil {
+			t.Fatal("no swap came back from a refusal that read the entry")
+		}
+		return got
+	}
+
+	t.Run("a check that could not run keeps asking", func(t *testing.T) {
+		srv := node(false, secretHash)
+		defer srv.Close()
+		got := verify(t, srv)
+		if got.Out.Znn.Verified {
+			t.Error("an unchecked amount was reported as verified")
+		}
+		if !got.Out.Znn.VerifyPending {
+			t.Error("a node that could not answer was recorded as a verdict: the leg will " +
+				"never be re-read, and its id will never reach the counterparty")
+		}
+	})
+
+	t.Run("a disagreement is an answer", func(t *testing.T) {
+		srv := node(true, bytes.Repeat([]byte{0xcd}, 32))
+		defer srv.Close()
+		got := verify(t, srv)
+		if got.Out.Znn.VerifyPending {
+			t.Error("an HTLC read and found wanting was left pending, which reads as " +
+				"'not checked yet' and hides a real mismatch behind a spinner")
+		}
+		if got.Out.Znn.VerifyError == "" {
+			t.Error("a refusal recorded no reason")
+		}
+	})
+}

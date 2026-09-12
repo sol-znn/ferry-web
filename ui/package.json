@@ -1,0 +1,51 @@
+{
+  "name": "ferry-web-v2",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Non-custodial cross-chain atomic swaps (BTC/ZTS/SOL) as a static site. Signing runs in WebAssembly in the page; there is no backend.",
+  "scripts": {
+    "wasm": "node ../scripts/build.mjs --wasm",
+    "wasm:dev": "node ../scripts/build.mjs --wasm --dev",
+    "build": "node ../scripts/build.mjs",
+    "build:dev": "node ../scripts/build.mjs --dev",
+    "dev": "npm run wasm:dev && vite",
+    "preview": "vite preview --outDir ../dist",
+    "preview:dev": "vite preview --outDir ../dist-dev --port 4174",
+    "smoke": "node ../scripts/smoke.mjs",
+    "smoke:dev": "node ../scripts/smoke.mjs --env=dev",
+    "wallet:devnet": "node ../scripts/wallet-devnet.mjs",
+    "wallet:provider": "node ../scripts/wallet-provider.mjs",
+    "test": "cd ../wasm && go test ./... && cd ../ui && npm run wallet:provider && npm run smoke",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,vue,json,md}\""
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.20.0",
+    "@solana/web3.js": "^1.98.4",
+    "@vueuse/core": "^14.2.0",
+    "nom-ui": "github:digitalSloth/nom-ui",
+    "tweetnacl": "^1.0.3",
+    "vue": "^3.4.0",
+    "vue-router": "^4.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/chrome": "^0.0.260",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.54.0",
+    "@typescript-eslint/parser": "^8.54.0",
+    "@vitejs/plugin-vue": "^6.0.4",
+    "@vue/eslint-config-typescript": "^14.6.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-vue": "^10.7.0",
+    "prettier": "^3.2.0",
+    "tailwindcss": "^4.0.0",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.3.0",
+    "vite": "^7.3.1",
+    "vue-tsc": "^3.3.3"
+  }
+}

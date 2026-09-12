@@ -1,0 +1,139 @@
+//go:build js && wasm
+
+// Command ferry-wasm is the whole of Ferry, compiled for the browser.
+//
+// Every line that touches a key -- generation, contract construction, signing,
+// local script-engine verification -- is Go running inside the page. The page is
+// static files on a CDN; there is no server to trust because there is no server.
+// Go rather than a JavaScript rewrite because the parts that lose money if they
+// are subtly wrong -- the strict template parser, the branch selection, the
+// script engine that executes a spend before anyone sees it -- are the parts
+// worth not rewriting.
+//
+// What running in a browser adds:
+//
+//   - Storage is localStorage, scoped to one origin, and holds unencrypted
+//     ephemeral keys. See docs/SECURITY.md and the export/import path.
+//   - Every chain call is a fetch(), so a node is only usable if it sends CORS
+//     headers. That is a property of the node, not of this program.
+//   - The Zenon leg stays read-only. Creating and unlocking an HTLC needs Zenon
+//     keys, and those stay in the user's own wallet.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"syscall/js"
+)
+
+// main installs the API on the page and then blocks forever.
+//
+// A Go WASM program that returns from main is torn down, taking the exported
+// functions with it, so the select is not idle — it is what keeps the module
+// alive between clicks.
+func main() {
+	store, err := NewLocalStorage()
+	if err != nil {
+		// The page is up and can render, but nothing can be saved. Say so
+		// loudly and refuse to start rather than letting the user create a swap
+		// whose refund key evaporates: an unsaveable swap is worse than none.
+		js.Global().Set("ferryWasm", js.ValueOf(map[string]any{
+			"ready": false,
+			"error": err.Error(),
+		}))
+		signalReady()
+		select {}
+	}
+
+	api := &API{Store: NewStore(store)}
+	js.Global().Set("ferryWasm", js.ValueOf(map[string]any{
+		"ready": true,
+		// call(method, bodyJSON) -> Promise<responseJSON>
+		//
+		// One entry point rather than one export per operation: the Go surface
+		// is a table of {name, JSON in, JSON out}, so one call covers all of it.
+		"call": js.FuncOf(call(api)),
+	}))
+	signalReady()
+	select {}
+}
+
+// call returns the JS-facing entry point.
+//
+// It must return immediately. Go's WASM runtime shares the one browser thread
+// with everything else on the page, so blocking here while an HTTP request runs
+// would deadlock: the fetch cannot resolve until the event loop is free, and the
+// event loop is not free until this returns. So the work goes to a goroutine and
+// the caller gets a promise.
+func call(api *API) func(js.Value, []js.Value) any {
+	return func(_ js.Value, args []js.Value) any {
+		if len(args) < 1 || args[0].Type() != js.TypeString {
+			return rejected("ferryWasm.call(method, bodyJSON) needs a method name")
+		}
+		method := args[0].String()
+		var body []byte
+		if len(args) > 1 && args[1].Type() == js.TypeString {
+			body = []byte(args[1].String())
+		}
+
+		return js.Global().Get("Promise").New(js.FuncOf(
+			func(_ js.Value, pargs []js.Value) any {
+				resolve := pargs[0]
+				go func() {
+					// A panic in Go/WASM kills the whole module, and the module
+					// is where the only copy of an unsaved key lives. Turning it
+					// into a rejected call keeps the page alive long enough for
+					// the user to export their swaps.
+					defer func() {
+						if r := recover(); r != nil {
+							resolve.Invoke(string(errorJSON(panicErr(r))))
+						}
+					}()
+					resolve.Invoke(string(api.Call(method, body)))
+				}()
+				return nil
+			}))
+	}
+}
+
+// rejected wraps an argument error in an already-resolved promise, so the
+// caller's error handling is the same whichever way a call fails.
+func rejected(msg string) any {
+	raw, _ := json.Marshal(map[string]string{"error": msg})
+	return js.Global().Get("Promise").Call("resolve", string(raw))
+}
+
+// signalReady tells the page the module is installed. `ferryWasm` appears
+// partway through go.run() and nothing in the DOM changes when it does, so an
+// event saves the caller a polling loop.
+//
+// Best-effort, and the guard is not defensive dressing: CustomEvent and
+// dispatchEvent are globals of a *browser*, and this module also runs under Node
+// in the smoke test. An unguarded Call on a missing property panics, after the
+// store is open and before anything can be exported -- the worst possible moment
+// to lose the module. The caller has a polling fallback for exactly this reason.
+func signalReady() {
+	ctor := js.Global().Get("CustomEvent")
+	dispatch := js.Global().Get("dispatchEvent")
+	if ctor.Type() != js.TypeFunction || dispatch.Type() != js.TypeFunction {
+		return
+	}
+	js.Global().Call("dispatchEvent", ctor.New("ferry-wasm-ready"))
+}
+
+type panicError struct{ v any }
+
+// Error renders the panic value with fmt rather than js.ValueOf.
+//
+// js.ValueOf itself panics on a Go value it cannot convert — a struct, a slice
+// of anything but bytes — and that panic happens inside the recover handler
+// that exists to keep the module alive, which is the one place a second panic
+// cannot be caught. fmt has no such failure mode.
+func (e panicError) Error() string {
+	if err, ok := e.v.(error); ok {
+		return "internal error: " + err.Error()
+	}
+	return fmt.Sprintf("internal error: %v", e.v)
+}
+
+func panicErr(v any) error { return panicError{v: v} }

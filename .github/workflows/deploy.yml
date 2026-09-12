@@ -1,0 +1,144 @@
+name: Build and deploy
+
+# The whole deployment: compile Go to WebAssembly, bundle the site around it,
+# hand GitHub Pages a directory of static files. There is no server to
+# provision, no secret to rotate and nothing with state.
+#
+# Tests run first and a failure stops the deploy. The artefact this publishes
+# signs Bitcoin transactions, and the seam most likely to break is the one
+# between JavaScript and Go — which is what scripts/smoke.mjs exercises against
+# the binary being shipped.
+#
+# Both instances (see wasm/env.go) are built and smoke tested on every run,
+# because they differ by a linker flag whose failure mode is a build that works
+# perfectly while storing swaps under the wrong name. Only production is
+# published: Pages serves one site per repository. The development build is
+# uploaded as a downloadable artefact and can be published deliberately from the
+# Actions tab — see docs/DEPLOY.md.
+
+on:
+  push:
+    branches: [master]
+  # So a deploy can be re-run without an empty commit, and so the development
+  # instance can be published on purpose — never something a push should do.
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: 'Which instance to publish to Pages'
+        type: choice
+        options: [prod, dev]
+        default: prod
+
+# What Pages needs and nothing else. id-token is for the OIDC handshake
+# deploy-pages uses; there is no long-lived token anywhere.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never two deploys at once, and never cancel one that is already publishing —
+# an interrupted deploy can leave the site half-updated.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # A push publishes production. Only a hand-run dispatch can say otherwise.
+      PUBLISH: ${{ github.event.inputs.instance || 'prod' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # wasm_exec.js is copied out of whichever Go is installed here and
+          # must match the compiler that produced ferry.wasm beside it. Pinning
+          # the toolchain pins both.
+          go-version: '1.27'
+          cache-dependency-path: wasm/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # nom-ui is a GitHub dependency, and npm 12 refuses git specs unless told
+      # otherwise. Set as config so it applies to every npm invocation.
+      - name: Install dependencies
+        working-directory: ui
+        env:
+          npm_config_allow_git: all
+        run: npm ci
+
+      - name: Go tests
+        working-directory: wasm
+        run: go test ./...
+
+      - name: Go vet, both targets
+        working-directory: wasm
+        # The browser target ships and the host target runs the tests. Code that
+        # compiles for one and not the other is a build-tag mistake, silent
+        # until someone deploys.
+        run: |
+          go vet ./...
+          GOOS=js GOARCH=wasm go vet ./...
+
+      - name: Typecheck and lint
+        working-directory: ui
+        run: |
+          npm run typecheck
+          npm run lint
+
+      # The extension boundary, against a stub provider. No chain, no browser
+      # and no extension needed — which is why it can run here at all.
+      - name: Wallet provider checks
+        working-directory: ui
+        run: npm run wallet:provider
+
+      # Development first, so the production build is what is left in
+      # ui/public/ferry.wasm and dist/ when this job ends. Each smoke run
+      # follows its own build and asserts the module reports the instance that
+      # build asked for, which catches a linker flag that did not take.
+      - name: Build and smoke the development instance
+        working-directory: ui
+        run: |
+          npm run build:dev
+          npm run smoke:dev -- ../dist-dev/ferry.wasm
+
+      - name: Build and smoke the production instance
+        working-directory: ui
+        run: |
+          npm run build
+          npm run smoke -- ../dist/ferry.wasm
+
+      # Downloadable rather than published: it is the build to serve locally
+      # against a regtest node, and it should not sit on the origin that holds
+      # anyone's mainnet swap keys.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ferry-dev
+          path: dist-dev
+          retention-days: 14
+
+      - name: Stage the instance being published
+        run: |
+          echo "publishing the $PUBLISH instance"
+          test -d "$([ "$PUBLISH" = dev ] && echo dist-dev || echo dist)"
+          echo "SITE=$([ "$PUBLISH" = dev ] && echo dist-dev || echo dist)" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.SITE }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
