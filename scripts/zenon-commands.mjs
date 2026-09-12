@@ -308,6 +308,14 @@ function readShell(block) {
       i = end + 1;
       continue;
     }
+    if (ch === "#" && !inWord) {
+      // A comment, as a shell reads one: a bare # where a word would start,
+      // OUTSIDE any quote, to the end of the line. A # inside a quoted value
+      // -- a newline followed by # inside a single-quoted word -- is text.
+      const nl = block.indexOf("\n", i);
+      i = nl < 0 ? block.length : nl;
+      continue;
+    }
     if (ch === "\\") {
       if (i + 1 >= block.length) return { error: "trailing backslash" };
       cur += block[i + 1];
@@ -351,6 +359,7 @@ const evils = [
   "a b",
   "it's",
   "x\ny",
+  "x\n# not a comment\nprintf PWNED",
   "$HOME",
 ];
 for (const [field, where] of [
@@ -359,6 +368,7 @@ for (const [field, where] of [
   ["amountDisplay", "zenon"],
   ["htlcId", "zenon"],
   ["selfAddress", "zenon"],
+  ["expirationHours", "zenon"],
   ["secretHashHex", "top"],
   ["nodeURL", "ctx"],
 ]) {
@@ -368,20 +378,21 @@ for (const [field, where] of [
     if (where === "zenon") sw.zenon[field] = evil;
     else if (where === "top") sw[field] = evil;
     else ctx = { nodeURL: evil };
-    // The block as a terminal would receive it, comments dropped -- a
-    // comment line is one that starts with # OUTSIDE any quote, which for
-    // this generator is every line that starts with #: values reach the
-    // block only quoted or commented, never at the start of a line.
-    const block = znnCommands(sw, ctx)
-      .split("\n")
-      .filter((l) => !l.startsWith("#"))
-      .join("\n");
-    // Placeholders the user fills in are angle-bracketed by design; a shell
-    // would read them as redirections, which is exactly why they are
-    // unmistakable. They are blanked before reading.
-    const r = readShell(block.replace(/<[^>]+>/g, "PLACEHOLDER"));
+    // The whole block, as a terminal would receive it: the reader drops the
+    // comments itself, the way a shell does, so a quoted value that happens
+    // to contain a newline and a # is not mistaken for one. Placeholders the
+    // user fills in are angle-bracketed by design; a shell would read them as
+    // redirections, which is exactly why they are unmistakable. They are
+    // blanked before reading.
+    const block = znnCommands(sw, ctx).replace(/<[^>]+>/g, "PLACEHOLDER");
+    const r = readShell(block);
     const bad = r.error ? `${r.error} in: ${block.slice(0, 160)}` : null;
-    const found = !r.error && r.cmds.some((argv) => argv.includes(evil));
+    // Every argument that carries the value carries it whole and alone: no
+    // occurrence anywhere in the block is glued to anything else.
+    const carrying = r.error
+      ? []
+      : r.cmds.flat().filter((t) => t.includes(evil));
+    const found = carrying.length > 0 && carrying.every((t) => t === evil);
     ok(
       `${field} = ${JSON.stringify(evil)}: no bare metacharacter in any runnable line`,
       !bad,
@@ -413,6 +424,14 @@ for (const [name, missing] of [
   ok(
     `${name}: the line is shown as a comment to complete`,
     text.includes("# znn-cli htlc.create") && text.includes("Not runnable yet"),
+  );
+}
+{
+  const sw = { ...zenonFirst, secretHashHex: "" };
+  ok(
+    "no hashlock: no runnable htlc.create",
+    !commands(sw).some((l) => l.includes("htlc.create")) &&
+      znnCommands(sw).includes("Not runnable yet"),
   );
 }
 {
