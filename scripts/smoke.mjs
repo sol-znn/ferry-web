@@ -885,6 +885,39 @@ const stale = await call('get', {id: 'ffffffffffffff03'})
 ok('a stale verified record is imported', imported.added === 1 && !stale.error, JSON.stringify(imported) + (stale.error ?? ''))
 ok('and its verdict is withdrawn on load', stale.zenon?.verified === false && /earlier release/.test(stale.zenon?.verifyError ?? ''), JSON.stringify([stale.zenon?.verified, stale.zenon?.verifyError]))
 
+section('only the canonical contract encoding is audited')
+
+// The same terms can be written with a longer push opcode than they need --
+// OP_PUSHDATA1 in front of a 32-byte hash, say. It parses to the same hash and
+// hashes to a different address, and the redeem this program builds is refused
+// for it under standard policy while the counterparty's refund is not. So the
+// audit accepts the canonical byte string and nothing else.
+const sender2 = await call('create', {role: 'initiator', leg: 'send', amountSats: 400000, destAddr: DEST, settings: SETTINGS})
+const forReceiver = await call('counterparty', {id: sender2.id, pkhHex: receiver.key.pkhHex})
+ok('a contract redeemable by this key is built', /^[0-9a-f]+$/.test(forReceiver.contractHex ?? ''), forReceiver.error)
+// receiver was created with created.secretHashHex; this contract commits to
+// sender2's hash, so audit it on a swap that carries that hash instead.
+const receiver2 = await call('create', {
+  role: 'participant',
+  leg: 'receive',
+  amountSats: 400000,
+  destAddr: DEST,
+  secretHashHex: sender2.secretHashHex,
+  settings: SETTINGS,
+})
+const forReceiver2 = await call('counterparty', {id: sender2.id, pkhHex: receiver2.key.pkhHex})
+const canonicalHex = forReceiver2.contractHex ?? forReceiver.contractHex
+const auditedOk = await call('audit', {id: receiver2.id, contractHex: canonicalHex})
+ok('the canonical contract audits clean', !auditedOk.error && auditedOk.contractHex === canonicalHex, auditedOk.error)
+// OP_SHA256 is 0xa8 and the hash push that follows it is 0x20 <32 bytes>;
+// 0x4c is OP_PUSHDATA1.
+const at = canonicalHex.indexOf('a820') + 2
+const wrappedHex = canonicalHex.slice(0, at) + '4c' + canonicalHex.slice(at)
+const auditedWrapped = await call('audit', {id: receiver2.id, contractHex: wrappedHex})
+ok('the same terms in a non-canonical encoding are refused', /canonical/.test(auditedWrapped.error ?? ''), auditedWrapped.error ?? 'accepted')
+const kept = await call('get', {id: receiver2.id})
+ok('and the accepted contract is not displaced', kept.contractHex === canonicalHex, kept.contractHex)
+
 section('the boundary refuses what it does not understand')
 
 const unknown = await call('nonsense')
