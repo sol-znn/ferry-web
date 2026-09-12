@@ -157,8 +157,9 @@ func panicErr(v any) error { return panicError{v: v} }
 //
 // The lock is named for the storage prefix, so the development and production
 // instances on one origin do not wait on each other. Where the API is missing
-// -- Node running the smoke test, an old browser -- the call runs unlocked,
-// exactly as before.
+// and there is no document -- Node running the smoke test -- the call runs
+// unlocked: one module, one tab, and the store's own lock is the whole story.
+// A browser without the API is refused rather than served unlocked.
 func underStoreLock(fn func() []byte) []byte {
 	nav := js.Global().Get("navigator")
 	locks := js.Undefined()

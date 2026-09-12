@@ -561,6 +561,24 @@ func (s *Swap) ContractCommitted() (bool, string) {
 	return false, ""
 }
 
+// FundingBound reports that the funding output has been read off its own
+// transaction and pays this swap's contract. It is what releases anything
+// built or offered against the funding: a redeem, a pre-signed refund, a
+// Zenon leg locked in answer to it. A script recorded is not enough on its
+// own; it has to be THIS contract's, judged now, against the contract the
+// record holds now.
+func (s *Swap) FundingBound() bool {
+	if s.Funding == nil || s.Funding.PkScriptHex == "" || len(s.Contract) == 0 {
+		return false
+	}
+	params, err := s.Params()
+	if err != nil {
+		return false
+	}
+	bound, err := s.Funding.bindsTo(s.Contract, params)
+	return err == nil && bound
+}
+
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of
 // ZenonLegIsInitiators: exactly one leg of a swap is the initiator's.

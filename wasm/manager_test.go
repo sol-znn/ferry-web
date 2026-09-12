@@ -1948,3 +1948,132 @@ func TestStaleWriteIsNamedOnTheWire(t *testing.T) {
 		t.Errorf("an ordinary error carries a code: %s", raw)
 	}
 }
+
+// A funding whose transaction pays a different contract is not bound, is
+// never recorded as bound, is said so once, and cannot have ZNN locked
+// against it -- the shape a replaced contract leaves behind.
+func TestAMismatchedFundingIsNeverBound(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	// The chain: a real transaction, under its own id, paying ANOTHER contract.
+	other, _ := BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash)
+	otherScript, _ := contractPkScript(other, params)
+	otherHex, otherTxid := fundingTxPaying(t, otherScript, 400_000)
+	backend := &stubBackend{
+		feeRate: 2,
+		utxos:   []chain.UTXO{{TxID: otherTxid, Vout: 0, Value: 400_000, Status: chain.Status{Confirmed: true, BlockHeight: 100}}},
+		rawTx:   map[string]string{otherTxid: otherHex},
+	}
+	m := newManager(t, backend)
+	sw := &Swap{
+		ID: "aabbccddeeff0150", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateAwaitingFunding, Key: redeem, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+		Zenon: ZenonLeg{PeerAddress: "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s", AmountDisplay: "10"},
+	}
+	if err := m.Store.Save(sw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := m.Refresh(context.Background(), sw.ID)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Funding == nil {
+		t.Fatal("funding not seen")
+	}
+	if got.Funding.PkScriptHex != "" {
+		t.Errorf("a mismatching script was recorded on the funding: %s", got.Funding.PkScriptHex)
+	}
+	if got.FundingBound() || view(got).FundingBound {
+		t.Error("a mismatching funding reads as bound")
+	}
+	got, _ = m.Refresh(context.Background(), sw.ID)
+	notes := 0
+	for _, ev := range got.Events {
+		if strings.Contains(ev.Message, "NOT this swap's contract") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Errorf("the mismatch was logged %d times over two polls, want once", notes)
+	}
+	// planCreate: nothing locked against it, before any node is asked.
+	plan := &walletBlockPlan{Block: newWalletBlock(69, "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d")}
+	err = planCreate(context.Background(), m, got, "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d", nil, plan)
+	if err == nil || !strings.Contains(err.Error(), "not been confirmed to pay this contract") {
+		t.Errorf("a create was planned against a mismatched funding: %v", err)
+	}
+	// And the same refusal while the funding is merely unread.
+	unread := &Swap{
+		ID: "aabbccddeeff0151", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+		State: StateFunded, Key: redeem, SecretHash: hash, AmountSats: 400_000,
+		Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+		Funding: &FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a", Value: 400_000, Confirmed: true},
+		Zenon:   ZenonLeg{PeerAddress: "z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s", AmountDisplay: "10"},
+	}
+	plan = &walletBlockPlan{Block: newWalletBlock(69, "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d")}
+	if err := planCreate(context.Background(), m, unread, "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d", nil, plan); err == nil ||
+		!strings.Contains(err.Error(), "not been confirmed to pay this contract") {
+		t.Errorf("a create was planned against an unread funding: %v", err)
+	}
+	// A bound record is judged against the contract it holds NOW: a script
+	// recorded for one contract does not bind another.
+	bound := &Swap{Network: "regtest", Contract: contract,
+		Funding: &FundingOutput{TxID: otherTxid, Value: 400_000, PkScriptHex: hex.EncodeToString(otherScript)}}
+	if bound.FundingBound() {
+		t.Error("a script recorded for another contract reads as bound to this one")
+	}
+}
+
+// The outcome identity check, one field at a time: the output index alone,
+// and the contract alone.
+func TestAnOutcomeChecksEachPartOfTheIdentity(t *testing.T) {
+	params := &chaincfg.RegressionNetParams
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	lock := time.Now().Add(48 * time.Hour).Unix()
+	contract, _ := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+	addr, _ := ContractAddress(contract, params)
+	pkScript, _ := contractPkScript(contract, params)
+	rawHex, txid := fundingTxPaying(t, pkScript, 400_000)
+	for name, change := range map[string]func(s *Swap){
+		"the output index": func(s *Swap) { s.Funding.Vout = 1 },
+		"the contract": func(s *Swap) {
+			s.Contract, _ = BuildContract(mustKey(t).PKH, redeem.PKH, lock, hash)
+		},
+	} {
+		backing := NewMemStorage()
+		backend := &stubBackend{feeRate: 2, rawTx: map[string]string{txid: rawHex}}
+		sw := &Swap{
+			ID: "aabbccddeeff0160", Network: "regtest", Role: RoleParticipant, Leg: LegReceive,
+			State: StateFunded, Key: redeem, Secret: secret, SecretHash: hash, AmountSats: 400_000,
+			Contract: contract, ContractAddr: addr.String(), DestAddr: regtestDest, LockTime: lock,
+			Funding: &FundingOutput{TxID: txid, Vout: 0, Value: 400_000, Confirmed: true, PkScriptHex: hex.EncodeToString(pkScript)},
+		}
+		if err := NewStore(backing).Save(sw); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		racing := &racingStorage{MemStorage: backing}
+		racing.onGet = func() {
+			st := NewStore(backing)
+			s, _ := st.Load(sw.ID)
+			change(s)
+			if err := st.Save(s); err != nil {
+				t.Fatalf("interleaved save: %v", err)
+			}
+		}
+		m := &Manager{Store: NewStore(racing), Chain: backend, Network: "regtest"}
+		_, err := m.Redeem(context.Background(), sw.ID, "")
+		if err == nil || !strings.Contains(err.Error(), "different funding or contract") {
+			t.Errorf("%s changed: the outcome was attached anyway: %v", name, err)
+		}
+		stored, _ := NewStore(backing).Load(sw.ID)
+		if stored.State == StateRedeemed {
+			t.Errorf("%s changed: the record was marked redeemed", name)
+		}
+	}
+}

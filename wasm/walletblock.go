@@ -244,6 +244,15 @@ func planCreate(ctx context.Context, mgr *Manager, sw *Swap, from string, mom *z
 	// read off the chain now, not off the record.
 	if err := requireCounterLegFunding(ctx, mgr.Chain, sw); err != nil {
 		return err
+	// Where a funding is on the record, it has to be this contract's, as the
+	// chain says -- not merely seen in a listing. A record whose funding and
+	// contract disagree is the shape a replaced contract leaves behind, and
+	// locking ZNN against it is the loss this finding describes.
+	if sw.Funding != nil && !sw.FundingBound() {
+		return errors.New("the Bitcoin funding on this swap has not been confirmed to pay this " +
+			"contract: either its transaction could not be read yet (Refresh keeps trying) or " +
+			"it pays a different script, which means the contract on this record is not the one " +
+			"that was funded. Nothing is locked against it until that is settled")
 	}
 
 	peer := strings.TrimSpace(sw.Zenon.PeerAddress)

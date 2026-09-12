@@ -1089,7 +1089,24 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 			return fmt.Errorf("funding output %s:%d holds %d sat on the chain, not the %d sat "+
 				"this record says", f.TxID, f.Vout, out.Value, f.Value)
 		}
-		f.PkScriptHex = hex.EncodeToString(out.PkScript)
+		// Recorded only once it is known to be this contract's. A script that
+		// was read and does not match must not land on the record: "bound"
+		// is what releases the card's actions, and a mismatch is the opposite
+		// of bound.
+		got := hex.EncodeToString(out.PkScript)
+		want, err := contractPkScript(sw.Contract, params)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(got, hex.EncodeToString(want)) {
+			if !loggedOnce(sw, fundingMismatchNote) {
+				sw.log("%s", fundingMismatchNote)
+			}
+			return fmt.Errorf("the funding output %s:%d pays script %s, which is not this swap's "+
+				"contract %s. The contract on the record is not the one that was funded",
+				f.TxID, f.Vout, got, sw.ContractAddr)
+		}
+		f.PkScriptHex = got
 	}
 	bound, err := f.bindsTo(sw.Contract, params)
 	if err != nil {
@@ -1102,6 +1119,13 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 	}
 	return nil
 }
+
+// fundingMismatchNote is logged once when the chain says the funding output
+// pays something other than this swap's contract: the record and the chain
+// disagree about what was funded, and nothing is offered against it.
+const fundingMismatchNote = "the funding output pays a script that is NOT this swap's contract. The " +
+	"contract on this record is not the one that was funded; nothing is offered against this " +
+	"funding. If the contract was replaced, restore the one that was funded from a recovery file"
 
 // Redeem claims a contract by revealing the secret, then broadcasts it.
 func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error) {

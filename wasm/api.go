@@ -198,7 +198,7 @@ func view(sw *Swap) *swapView {
 		Events:                    sw.Events,
 		SecretArrivesOnZenon: sw.SecretArrivesOnZenon(),
 		FundingShort:         sw.Funding != nil && sw.Funding.Value < sw.AmountSats,
-		FundingBound:         sw.Funding != nil && sw.Funding.PkScriptHex != "",
+		FundingBound:         sw.FundingBound(),
 		Funding:              sw.Funding,
 		FundingBroadcast:     sw.FundingBroadcast,
 		RefundTx:             sw.RefundTx,
