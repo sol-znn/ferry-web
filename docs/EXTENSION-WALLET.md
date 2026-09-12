@@ -312,31 +312,40 @@ The wallet button only appears on a swap with a Bitcoin contract to order its
 Zenon expiry against, which normally means two profiles and several hand-offs.
 For testing the wallet path alone, paste this into the dev instance's console —
 it builds both sides of a regtest swap through the module and leaves the
-participant's card holding an outstanding `htlc.Create`:
+initiator's card holding an outstanding `htlc.Create`.
+
+It is the **Zenon-initiated** ordering on purpose. The other one — Bitcoin
+initiates, the participant creates the Zenon HTLC in answer — does not offer a
+create until the initiator's Bitcoin funding is mined and covers the agreed
+amount, and `walletBlock` refuses to build one before then: a payment still in
+a mempool is one its sender can replace, and that sender already holds the
+secret. With nothing paid on regtest, that card shows why it is waiting rather
+than a button. The initiator's Zenon leg goes first by design, so it needs no
+Bitcoin to exist:
 
 ```js
 const S = {network: 'regtest', btcEsplora: 'http://127.0.0.1:3002', znnUrl: 'http://127.0.0.1:35997'}
 const call = (m, b) => window.ferryWasm.call(m, JSON.stringify(b)).then(JSON.parse)
 const PEER = 'z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s' // any real address; the HTLC pays it
 
-const a = await call('create', {
-  role: 'initiator', leg: 'send', amountSats: 400000,
-  destAddr: 'bcrt1q0rymrte6drs2nvjn73mqsl2meud7nv0dy6tgn4',
-  zenonSelfAddress: PEER, zenonAmount: '10', settings: S,
-})
 // No zenonSelfAddress here on purpose: whichever account the wallet has selected
 // is adopted, with a warning that it becomes the only address that can reclaim.
-const b = await call('create', {
-  role: 'participant', leg: 'receive', amountSats: 400000,
+const a = await call('create', {
+  role: 'initiator', leg: 'receive', amountSats: 400000,
   destAddr: 'bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080',
-  secretHashHex: a.secretHashHex, zenonPeerAddress: PEER, zenonAmount: '10', settings: S,
+  zenonPeerAddress: PEER, zenonAmount: '10', settings: S,
 })
-const built = await call('counterparty', {id: a.id, pkhHex: b.key.pkhHex})
-await call('audit', {id: b.id, contractHex: built.contractHex})
+const b = await call('create', {
+  role: 'participant', leg: 'send', amountSats: 400000,
+  destAddr: 'bcrt1q0rymrte6drs2nvjn73mqsl2meud7nv0dy6tgn4',
+  secretHashHex: a.secretHashHex, zenonSelfAddress: PEER, zenonAmount: '10', settings: S,
+})
+const built = await call('counterparty', {id: b.id, pkhHex: a.key.pkhHex})
+await call('audit', {id: a.id, contractHex: built.contractHex})
 location.reload()
 ```
 
-Two cards appear. The **participant's** — the one that receives BTC — has the
+Two cards appear. The **initiator's** — the one that receives BTC — has the
 Zenon create. On it: connect, read the sync verdict, expand *"The block, exactly
 as the wallet will receive it"* and compare it against what Syrius shows, approve,
 and watch the card record the returned hash as the HTLC id. It will read pending

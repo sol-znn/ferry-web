@@ -793,6 +793,45 @@ ok(
   JSON.stringify(silent.agreement),
 )
 
+section('ZNN is not locked against Bitcoin that is not settled')
+
+// The participant created above answers the initiator's Bitcoin funding, and
+// nothing has been paid: the sign-time gate refuses on the record, before any
+// chain is asked (the Esplora here is a dead port, and this stays offline).
+const held = await call('fundingCheck', {id: receiver.id, settings: SETTINGS})
+ok(
+  'the waiting shape is refused, naming the reason',
+  /not locking ZNN yet/.test(held.error ?? '') && /not been seen/.test(held.error ?? ''),
+  held.error,
+)
+ok(
+  'and the card is told the same thing',
+  receiver.fundingCommitted === false && /not been seen/.test(receiver.fundingCommitBlocker ?? ''),
+  JSON.stringify([receiver.fundingCommitted, receiver.fundingCommitBlocker]),
+)
+
+// The Zenon-initiated ordering: this side's HTLC goes first, so there is no
+// Bitcoin to wait for and the check passes without a chain.
+const zenonFirst = await call('create', {
+  role: 'initiator',
+  leg: 'receive',
+  amountSats: 400000,
+  destAddr: DEST,
+  settings: SETTINGS,
+})
+ok('a Zenon-initiated swap is created', !zenonFirst.error, zenonFirst.error)
+const unheld = await call('fundingCheck', {id: zenonFirst.id, settings: SETTINGS})
+ok(
+  'the shape that goes first passes with nothing on Bitcoin',
+  unheld.ok === true && unheld.waits === false,
+  JSON.stringify(unheld),
+)
+ok(
+  'and its card offers the create',
+  zenonFirst.fundingCommitted === true && !zenonFirst.fundingCommitBlocker,
+  JSON.stringify([zenonFirst.fundingCommitted, zenonFirst.fundingCommitBlocker]),
+)
+
 section('the boundary refuses what it does not understand')
 
 const unknown = await call('nonsense')

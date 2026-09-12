@@ -122,6 +122,16 @@ export const api = {
     }),
 
   /**
+   * The sign-time gate for a create that answers the counterparty's Bitcoin
+   * funding: the same fail-closed check planCreate runs, on its own, for the
+   * moment before a built block is handed to the wallet. Throws with the
+   * reason when the funding is missing, short, unconfirmed, spent, or cannot
+   * be read; answers {ok, waits} otherwise.
+   */
+  fundingCheck: (id: string, settings: Settings) =>
+    wasmCall<{ok: true; waits: boolean}>('fundingCheck', {id, settings}),
+
+  /**
    * Record what the wallet published, and check it.
    *
    * A create is fed straight back through the ordinary verification path: the

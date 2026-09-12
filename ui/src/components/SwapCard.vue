@@ -420,6 +420,13 @@ const showHashlock = computed(
 const zenonAction = computed<WalletAction | null>(() => {
   if (props.swap.zenonHtlcIsOurs) {
     if (!live.value || props.swap.zenon?.htlcId) return null
+    // Where this leg answers the counterparty's Bitcoin funding, it is not
+    // offered until that funding is real: present, covering the amount, mined
+    // and unspent, as Go judges it. Not mounting the wallet panel is what
+    // makes Auto Mode wait here rather than halt on the engine's refusal --
+    // and the panel appears, and autopilot moves, the moment a refresh says
+    // the funding has settled.
+    if (!props.swap.fundingCommitted) return null
     return 'create'
   }
   if (props.swap.zenon?.unlockHash) return null
@@ -1238,6 +1245,38 @@ async function downloadRecovery() {
         </div>
       </section>
 
+      <!-- The create is withheld, and why. This is the participant in a swap
+           the Bitcoin side initiated: their ZNN answers a payment that is not
+           yet real, and locking it against one the sender can still replace
+           hands them the ZNN for nothing. Outside the Zenon section on purpose:
+           that section waits for a funding record to exist at all, and the
+           commonest reason to be waiting is that nothing has been paid yet,
+           which is exactly when the explanation is owed. -->
+      <Note
+        v-if="
+          swap.contractAddr &&
+          swap.zenonHtlcIsOurs &&
+          !swap.zenon?.htlcId &&
+          live &&
+          swap.fundingCommitBlocker
+        "
+        variant="warn"
+        summary="Not locking ZNN yet: their Bitcoin funding is not settled"
+      >
+        <p>
+          {{
+            swap.fundingCommitBlocker.charAt(0).toUpperCase() + swap.fundingCommitBlocker.slice(1)
+          }}. Your Zenon HTLC answers that payment, so it waits until the payment is mined and
+          covers the agreed amount. A payment still in a mempool is one its sender can replace
+          &mdash; and they already hold the secret that would open your HTLC.
+        </p>
+        <p class="mt-2">
+          Refresh keeps checking. The create appears &mdash; and runs by itself under Auto Mode
+          &mdash; once it is settled. No znn-cli create command is printed for this leg at any
+          point: a terminal runs no check, so the wallet button is the way to create it.
+        </p>
+      </Note>
+
       <!-- The Zenon leg -->
       <section v-if="showZenon" class="grid min-w-0 gap-3 rounded-lg border border-border p-3">
         <h3 class="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
@@ -1251,7 +1290,9 @@ async function downloadRecovery() {
               With the Syrius browser extension that is a button: the block goes to the extension,
               which shows it to you, signs it with its own key, mines its own plasma and publishes
               through its own node. Without it, the same operation is the printed
-              <code>znn-cli</code> command.
+              <code>znn-cli</code> command &mdash; except for a create that answers the
+              counterparty's Bitcoin funding, which is never printed as a command: a terminal runs
+              no check, and that check is the whole point. The terms are printed instead.
             </p>
           </InfoTip>
           <span class="flex-1" />

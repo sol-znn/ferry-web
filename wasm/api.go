@@ -116,6 +116,12 @@ type swapView struct {
 	// secret. Derived in Go so the card's missing button and Redeem's refusal
 	// are one rule rather than two.
 	RedeemHeldForShortFunding bool `json:"redeemHeldForShortFunding,omitempty"`
+	// FundingCommitted says nothing about the counterparty's Bitcoin funding
+	// stands in the way of this side creating its Zenon HTLC; where something
+	// does, FundingCommitBlocker names it. Derived in Go so the card's gate and
+	// planCreate's refusal are one rule.
+	FundingCommitted     bool   `json:"fundingCommitted"`
+	FundingCommitBlocker string `json:"fundingCommitBlocker,omitempty"`
 
 	Funding  *FundingOutput `json:"funding,omitempty"`
 	RefundTx *SpendResult   `json:"refundTx,omitempty"`
@@ -169,6 +175,8 @@ func view(sw *Swap) *swapView {
 		SecretArrivesOnZenon:      sw.SecretArrivesOnZenon(),
 		FundingShort:              sw.FundingShort(),
 		RedeemHeldForShortFunding: sw.RedeemHeldForShortFunding(),
+		FundingCommitted:          sw.FundingCommitted(),
+		FundingCommitBlocker:      sw.FundingCommitBlocker(),
 		Funding:                   sw.Funding,
 		FundingBroadcast:          sw.FundingBroadcast,
 		RefundTx:                  sw.RefundTx,
@@ -199,6 +207,39 @@ func views(swaps []*Swap) []*swapView {
 		out = append(out, view(sw))
 	}
 	return out
+}
+
+// fundingCheck is the sign-time gate. planCreate runs requireCounterLegFunding
+// when it BUILDS a block; this runs the same fail-closed check on its own, so
+// the page can run it immediately before a built block is handed to the
+// wallet -- a person may have spent minutes reading the summary, and the
+// funding that was mined at plan time can have been spent or reorganised out
+// since. Refresh is not a substitute: it is a projection that keeps what it
+// last knew when a read fails, which is the opposite of what a check before an
+// irreversible step needs.
+//
+// Answers {ok:true, waits:<bool>} or an error naming what is wrong. For the
+// shapes that do not lock ZNN against Bitcoin funding it answers ok without
+// consulting a chain.
+type fundingCheckReq struct {
+	ID       string   `json:"id"`
+	Settings Settings `json:"settings"`
+}
+
+func handleFundingCheck(ctx context.Context, a *API, body []byte) (any, error) {
+	var req fundingCheckReq
+	mgr, err := withManager(a, body, &req, func(r *fundingCheckReq) Settings { return r.Settings })
+	if err != nil {
+		return nil, err
+	}
+	sw, err := a.Store.Load(req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireCounterLegFunding(ctx, mgr.Chain, sw); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "waits": sw.ZenonCreateWaitsOnBtc()}, nil
 }
 
 // ---------- the call table ----------
@@ -271,6 +312,7 @@ func init() {
 		"walletSync":   handleWalletSync,
 		"walletBlock":  handleWalletBlock,
 		"walletSent":   handleWalletSent,
+		"fundingCheck": handleFundingCheck,
 		"secret":       handleSetSecret,
 		"archive":      handleArchive,
 		"delete":       handleDelete,

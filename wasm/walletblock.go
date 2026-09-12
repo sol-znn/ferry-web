@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zenon/ferry-web/wasm/chain"
 	"github.com/zenon/ferry-web/wasm/znn"
 )
 
@@ -236,6 +237,13 @@ func planCreate(ctx context.Context, mgr *Manager, sw *Swap, from string, mom *z
 		return errors.New("the Bitcoin contract has not been audited yet. Audit it first: the " +
 			"Zenon expiry is computed from its locktime, and locking ZNN against a contract you " +
 			"have not checked is the one move this app will not help you make")
+	}
+	// An audited contract is a script; it says nothing about whether money is
+	// in it. Where this leg answers the counterparty's Bitcoin funding, that
+	// funding has to be real before ZNN is locked against it -- and real is
+	// read off the chain now, not off the record.
+	if err := requireCounterLegFunding(ctx, mgr.Chain, sw); err != nil {
+		return err
 	}
 
 	peer := strings.TrimSpace(sw.Zenon.PeerAddress)
@@ -662,4 +670,70 @@ func orElse(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// requireCounterLegFunding is the gate in front of locking ZNN against the
+// counterparty's Bitcoin: nothing to do unless this swap's create waits on that
+// funding, and otherwise a refusal unless it is present, covers the agreed
+// amount, is mined at least commitConfirmations deep, and is still unspent --
+// all of it read from the chain at this moment.
+//
+// The record is checked first, because it is what the card showed and its
+// refusal names what the user is looking at. Then the chain is asked again,
+// because a record is only as current as the last poll and the block built
+// here is about to be signed: a funding that was replaced or reorganised out a
+// minute ago must not get a lock of ZNN. A chain that cannot be read is a
+// refusal too, not a pass.
+func requireCounterLegFunding(ctx context.Context, backend chain.Backend, sw *Swap) error {
+	if !sw.ZenonCreateWaitsOnBtc() {
+		return nil
+	}
+	if blocker := sw.FundingCommitBlocker(); blocker != "" {
+		return fmt.Errorf("not locking ZNN yet: %s. This leg answers their Bitcoin, so it waits "+
+			"until that payment is confirmed and covers the agreed amount; Refresh keeps "+
+			"checking, and Auto Mode creates the HTLC when it is", blocker)
+	}
+	return checkFundingOnChain(ctx, backend, sw, commitConfirmations)
+}
+
+// checkFundingOnChain is the fresh half of requireCounterLegFunding, with the
+// depth as a parameter so the rule can be tested at every threshold.
+func checkFundingOnChain(ctx context.Context, backend chain.Backend, sw *Swap, minDepth int64) error {
+	if backend == nil {
+		return errors.New("no Bitcoin backend to re-read the funding from; check Node settings")
+	}
+	utxos, err := backend.AddressUTXOs(ctx, sw.ContractAddr)
+	if err != nil {
+		return fmt.Errorf("could not re-read the contract address before locking ZNN, so the "+
+			"funding could not be confirmed as still there: %w", err)
+	}
+	var found *chain.UTXO
+	for i := range utxos {
+		if utxos[i].TxID == sw.Funding.TxID && utxos[i].Vout == sw.Funding.Vout {
+			found = &utxos[i]
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("the funding output %s:%d is no longer unspent at the contract address: "+
+			"it has been spent, replaced or reorganised out since it was last seen. Refresh the "+
+			"swap before doing anything else", sw.Funding.TxID, sw.Funding.Vout)
+	}
+	if found.Value < sw.AmountSats {
+		return fmt.Errorf("the funding output holds %d sat but %d sat was agreed",
+			found.Value, sw.AmountSats)
+	}
+	if !found.Status.Confirmed || found.Status.BlockHeight <= 0 {
+		return errors.New("their funding is back in the mempool, where the sender can replace it; " +
+			"wait for it to be mined again")
+	}
+	tip, err := backend.TipHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("could not read the Bitcoin chain tip to count confirmations: %w", err)
+	}
+	if depth := tip - found.Status.BlockHeight + 1; depth < minDepth {
+		return fmt.Errorf("their funding has %d of the %d confirmation%s this needs",
+			depth, minDepth, plural(int(minDepth)))
+	}
+	return nil
 }
