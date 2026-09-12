@@ -1086,19 +1086,9 @@ func zenonVerifyParams(sw *Swap) znn.VerifyParams {
 		want.ExpectRecipient = sw.Zenon.SelfAddress
 		want.ExpectSender = sw.Zenon.PeerAddress
 	}
-	// The recipient is the check that decides who gets the money, and a blank
-	// expectation is not "no check" but "no answer": an HTLC paying anybody at
-	// all would pass it. The Zenon addresses are optional at creation because
-	// they are routinely filled in later; they are not optional here.
-	if want.ExpectRecipient == "" {
-		if sw.ZenonHtlcIsOurs() {
-			want.MissingTerms = append(want.MissingTerms,
-				"this swap records no Zenon address for the counterparty, the one your HTLC must pay")
-		} else {
-			want.MissingTerms = append(want.MissingTerms,
-				"this swap records no Zenon address of your own, the one their HTLC must pay")
-		}
-	}
+	// Terms never recorded cannot be checked, and a check that cannot run must
+	// not read as one that passed. See Swap.MissingZenonTerms.
+	want.MissingTerms = sw.MissingZenonTerms()
 	// The initiator's leg must expire LAST, or one party can wait out a chain and
 	// still act on the other. A blanket rule that Zenon expires first would reject
 	// every swap in which Zenon is the initiating side. Only meaningful once the
@@ -1135,13 +1125,9 @@ func (m *Manager) zenonExpectations(ctx context.Context, sw *Swap) znn.VerifyPar
 	// they issued this morning. Every failure sets AmountUncheckable rather than
 	// leaving MinAmount nil, so a comparison that did not run cannot come back as
 	// a matching amount.
-	if sw.Zenon.AmountDisplay == "" {
-		// Not "no lower bound" -- no bound is a bound of zero, and an HTLC
-		// holding one base unit would pass it. Recorded as a term never agreed,
-		// which is a refusal rather than a node to ask again.
-		want.MissingTerms = append(want.MissingTerms,
-			"this swap records no agreed Zenon amount")
-	} else {
+	// A missing or zero amount is already among MissingTerms; only a real one
+	// is converted.
+	if amount := strings.TrimSpace(sw.Zenon.AmountDisplay); amount != "" && strings.Trim(amount, "0.") != "" {
 		agreed := sw.Zenon.AgreedToken()
 		if tok, terr := m.Znn.GetToken(ctx, agreed); terr != nil {
 			want.AmountUncheckable = fmt.Sprintf("could not read token %s from the node: %v",
@@ -1166,7 +1152,7 @@ func (m *Manager) zenonExpectations(ctx context.Context, sw *Swap) znn.VerifyPar
 //
 // Values that equal what is already recorded are accepted silently, so a page
 // that submits the whole form need not work out which fields it changed.
-func (m *Manager) SetZenonTerms(id, self, peer, amount string) (*Swap, error) {
+func (m *Manager) SetZenonTerms(ctx context.Context, id, self, peer, amount string) (*Swap, error) {
 	sw, err := m.Store.Load(id)
 	if err != nil {
 		return nil, err
@@ -1189,6 +1175,31 @@ func (m *Manager) SetZenonTerms(id, self, peer, amount string) (*Swap, error) {
 		sw.log("%s set to %s", name, value)
 		return nil
 	}
+	// An amount becomes immutable the moment it is recorded, so everything
+	// that would make it unusable is checked first: the shape, that it is more
+	// than nothing, and that the agreed token can represent it -- which needs
+	// the token's decimals from a node, and without a node is a refusal.
+	isAmount := func(v string) error {
+		if err := canonicalZenonAmount(v); err != nil {
+			return err
+		}
+		if strings.Trim(v, "0.") == "" {
+			return fmt.Errorf("%q is zero, and a lower bound of zero is no lower bound", v)
+		}
+		if m.Znn == nil {
+			return errors.New("the amount's precision has to be checked against the agreed token, " +
+				"which needs a Zenon node: set one under Nodes and try again")
+		}
+		tok, err := m.Znn.GetToken(ctx, sw.Zenon.AgreedToken())
+		if err != nil {
+			return fmt.Errorf("could not read token %s from the node to check the amount's "+
+				"precision: %w", sw.Zenon.AgreedToken(), err)
+		}
+		if _, err := decimalToBaseUnits(v, tok.Decimals); err != nil {
+			return fmt.Errorf("%s cannot be locked in %s: %w", v, tok.Symbol, err)
+		}
+		return nil
+	}
 	isAddress := func(v string) error { _, err := znn.ParseAddress(v); return err }
 	if err := set("your Zenon address", &sw.Zenon.SelfAddress, self, isAddress); err != nil {
 		return nil, err
@@ -1196,7 +1207,7 @@ func (m *Manager) SetZenonTerms(id, self, peer, amount string) (*Swap, error) {
 	if err := set("the counterparty's Zenon address", &sw.Zenon.PeerAddress, peer, isAddress); err != nil {
 		return nil, err
 	}
-	if err := set("the agreed Zenon amount", &sw.Zenon.AmountDisplay, amount, canonicalZenonAmount); err != nil {
+	if err := set("the agreed Zenon amount", &sw.Zenon.AmountDisplay, amount, isAmount); err != nil {
 		return nil, err
 	}
 	if changed && sw.Zenon.HtlcID != "" {

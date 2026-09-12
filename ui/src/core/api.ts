@@ -170,8 +170,11 @@ export const api = {
    * alone; a field already recorded refuses a different value, because these
    * are terms of the trade. Filling one in un-verifies the leg.
    */
-  zenonTerms: (id: string, terms: {selfAddress?: string; peerAddress?: string; amount?: string}) =>
-    wasmCall<Swap>('zenonTerms', {id, ...terms}),
+  zenonTerms: (
+    id: string,
+    terms: {selfAddress?: string; peerAddress?: string; amount?: string},
+    settings: Settings,
+  ) => wasmCall<Swap>('zenonTerms', {id, ...terms, settings}),
 
   archive: (id: string, archived: boolean) => wasmCall<Swap>('archive', {id, archived}),
 

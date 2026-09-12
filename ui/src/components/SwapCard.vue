@@ -596,11 +596,15 @@ function useWalletAddress() {
 }
 async function saveZenonTerms() {
   await run(() =>
-    api.zenonTerms(props.swap.id, {
-      selfAddress: termIn.value.selfAddress.trim() || undefined,
-      peerAddress: termIn.value.peerAddress.trim() || undefined,
-      amount: termIn.value.amount.trim() || undefined,
-    }),
+    api.zenonTerms(
+      props.swap.id,
+      {
+        selfAddress: termIn.value.selfAddress.trim() || undefined,
+        peerAddress: termIn.value.peerAddress.trim() || undefined,
+        amount: termIn.value.amount.trim() || undefined,
+      },
+      settings.value,
+    ),
   )
 }
 

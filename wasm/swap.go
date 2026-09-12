@@ -424,6 +424,60 @@ func (s *Swap) FundingCommitBlocker() string {
 // the Bitcoin funding -- including every shape where that funding is not
 // waited on at all.
 func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
+// MissingZenonTerms lists the terms of the Zenon leg this swap never recorded
+// and so cannot check an HTLC against: the address the HTLC must pay (this
+// user's own for an incoming HTLC, the counterparty's for one this user
+// creates) and the agreed amount. The addresses and the amount are optional at
+// creation because they are routinely filled in later; they are not optional
+// for a verdict. An expectation left blank is not a check switched off but a
+// check with no answer -- an HTLC paying anybody at all would pass it -- so
+// every route to `verified` refuses while this is non-empty, a verdict stored
+// by an earlier release against incomplete terms is withdrawn on load, and
+// planUnlock will not pack the preimage over one.
+func (s *Swap) MissingZenonTerms() []string {
+	var missing []string
+	if s.ZenonHtlcIsOurs() {
+		if strings.TrimSpace(s.Zenon.PeerAddress) == "" {
+			missing = append(missing,
+				"this swap records no Zenon address for the counterparty, the one your HTLC must pay")
+		}
+	} else if strings.TrimSpace(s.Zenon.SelfAddress) == "" {
+		missing = append(missing,
+			"this swap records no Zenon address of your own, the one their HTLC must pay")
+	}
+	amount := strings.TrimSpace(s.Zenon.AmountDisplay)
+	switch {
+	case amount == "":
+		missing = append(missing, "this swap records no agreed Zenon amount")
+	case strings.Trim(amount, "0.") == "":
+		// A lower bound of zero is no lower bound: one base unit would pass it.
+		missing = append(missing, "this swap's agreed Zenon amount is zero")
+	}
+	return missing
+}
+
+// withdrawStaleVerdict takes back a `verified` that was reached against
+// incomplete terms. The release that had this finding could persist such a
+// verdict, and a record survives an upgrade in localStorage and in a backup;
+// the flag is what planUnlock trusts, so it cannot be allowed to outlive the
+// rule. Applied on every load, idempotently, and said once in the log.
+func (s *Swap) withdrawStaleVerdict() {
+	if !s.Zenon.Verified {
+		return
+	}
+	missing := s.MissingZenonTerms()
+	if len(missing) == 0 {
+		return
+	}
+	s.Zenon.Verified = false
+	s.Zenon.VerifyPending = false
+	s.Zenon.VerifyError = "verified by an earlier release against incomplete terms: " +
+		strings.Join(missing, "; ") + ". Add them to the swap and verify again"
+	msg := "withdrew a verification reached against incomplete terms; the HTLC must be verified again"
+	if !loggedOnce(s, msg) {
+		s.log("%s", msg)
+	}
+}
 
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of

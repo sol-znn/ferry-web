@@ -656,18 +656,26 @@ func handleZenonFind(ctx context.Context, a *API, body []byte) (any, error) {
 // zenonTerms completes the Zenon terms a swap was created without. Blank
 // fields are left alone; a field that is already recorded refuses a different
 // value. See Manager.SetZenonTerms.
-func handleZenonTerms(_ context.Context, a *API, body []byte) (any, error) {
+func handleZenonTerms(ctx context.Context, a *API, body []byte) (any, error) {
 	var req struct {
-		ID          string `json:"id"`
-		SelfAddress string `json:"selfAddress"`
-		PeerAddress string `json:"peerAddress"`
-		Amount      string `json:"amount"`
+		ID          string   `json:"id"`
+		SelfAddress string   `json:"selfAddress"`
+		PeerAddress string   `json:"peerAddress"`
+		Amount      string   `json:"amount"`
+		Settings    Settings `json:"settings"`
 	}
-	if err := decode(body, &req); err != nil {
+	type termsReq = struct {
+		ID          string   `json:"id"`
+		SelfAddress string   `json:"selfAddress"`
+		PeerAddress string   `json:"peerAddress"`
+		Amount      string   `json:"amount"`
+		Settings    Settings `json:"settings"`
+	}
+	mgr, err := withManager(a, body, (*termsReq)(&req), func(r *termsReq) Settings { return r.Settings })
+	if err != nil {
 		return nil, err
 	}
-	mgr := &Manager{Store: a.Store}
-	sw, err := mgr.SetZenonTerms(req.ID, req.SelfAddress, req.PeerAddress, req.Amount)
+	sw, err := mgr.SetZenonTerms(ctx, req.ID, req.SelfAddress, req.PeerAddress, req.Amount)
 	if err != nil {
 		return nil, err
 	}

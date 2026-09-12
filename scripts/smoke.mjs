@@ -838,18 +838,38 @@ section('the Zenon terms a swap was created without can be completed, once')
 // this is how they get there, and once there they do not move.
 const MINE = 'z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d'
 const OTHER = 'z1qqvwzz2xq7q5gwk6uhcddgrpxlfcyzc8rsu82s'
-const badAddr = await call('zenonTerms', {id: receiver.id, selfAddress: 'z1notanaddress'})
+const badAddr = await call('zenonTerms', {id: receiver.id, selfAddress: 'z1notanaddress', settings: SETTINGS})
 ok('an unparseable address is refused', /Zenon address/.test(badAddr.error ?? ''), badAddr.error)
-const badAmt = await call('zenonTerms', {id: receiver.id, amount: '10\nprintf PWNED'})
+const badAmt = await call('zenonTerms', {id: receiver.id, amount: '10\nprintf PWNED', settings: SETTINGS})
 ok('a non-decimal amount is refused', /plain decimal/.test(badAmt.error ?? ''), badAmt.error)
-const termed = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, amount: '10'})
-ok('blank terms are filled in', termed.zenon?.selfAddress === MINE && termed.zenon?.amountDisplay === '10', termed.error)
-const moved = await call('zenonTerms', {id: receiver.id, selfAddress: OTHER})
+const zeroAmt = await call('zenonTerms', {id: receiver.id, amount: '0.0', settings: SETTINGS})
+ok('a zero amount is refused', /zero/.test(zeroAmt.error ?? ''), zeroAmt.error)
+// An amount needs the token's decimals to be checked against, and that needs
+// a node; this suite has none, so the amount is refused rather than recorded.
+const unchecked = await call('zenonTerms', {id: receiver.id, amount: '10', settings: SETTINGS})
+ok('an amount is not recorded without a node to check its precision', /Zenon node/.test(unchecked.error ?? ''), unchecked.error)
+const termed = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, settings: SETTINGS})
+ok('a blank address is filled in', termed.zenon?.selfAddress === MINE, termed.error)
+const moved = await call('zenonTerms', {id: receiver.id, selfAddress: OTHER, settings: SETTINGS})
 ok('an agreed address cannot be changed', /cannot be changed/.test(moved.error ?? ''), moved.error)
-const same = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, amount: '10'})
-ok('resubmitting the same terms is not a change', !same.error && same.zenon?.selfAddress === MINE, same.error)
-const stray = await call('zenonTerms', {id: receiver.id, token: 'zts1xyz'})
+const same = await call('zenonTerms', {id: receiver.id, selfAddress: MINE, settings: SETTINGS})
+ok('resubmitting the same term is not a change', !same.error && same.zenon?.selfAddress === MINE, same.error)
+const stray = await call('zenonTerms', {id: receiver.id, token: 'zts1xyz', settings: SETTINGS})
 ok('a field this call does not take is refused', Boolean(stray.error), JSON.stringify(stray).slice(0, 80))
+
+// A verdict from before the rule: a real record (from an export, so it carries
+// its key and secret) written as verified with no own address. It comes back
+// off the store withdrawn, with the reason on it.
+const exportedNow = await call('export')
+const staleRecord = {
+  ...exportedNow.swaps.find((s) => s.id === receiver.id),
+  id: 'ffffffffffffff03',
+  zenon: {verified: true, amountDisplay: '10', hashType: 1, keyMaxSize: 32, htlcId: '9f'},
+}
+const imported = await call('import', {data: JSON.stringify({...exportedNow, swaps: [staleRecord]})})
+const stale = await call('get', {id: 'ffffffffffffff03'})
+ok('a stale verified record is imported', imported.added === 1 && !stale.error, JSON.stringify(imported) + (stale.error ?? ''))
+ok('and its verdict is withdrawn on load', stale.zenon?.verified === false && /earlier release/.test(stale.zenon?.verifyError ?? ''), JSON.stringify([stale.zenon?.verified, stale.zenon?.verifyError]))
 
 section('the boundary refuses what it does not understand')
 
