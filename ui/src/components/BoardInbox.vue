@@ -5,7 +5,7 @@ import {Badge, Button} from 'nom-ui'
 import InfoTip from './InfoTip.vue'
 import {shortKey} from '@/core/board'
 import {chainList, chainsForPost, missingChains, type ChainId} from '@/core/chains'
-import {btc} from '@/core/format'
+import {btc, whenUTC} from '@/core/format'
 import type {InboundTake, MyPost} from '@/types'
 
 // Who wants your offers.
@@ -91,7 +91,7 @@ const sorted = computed(() => [...props.takes].sort((a, b) => b.at - a.at))
           {{ t.take.note }}
         </p>
         <p class="font-mono text-xs text-muted-foreground/80">
-          {{ new Date(t.at * 1000).toISOString().slice(0, 19).replace('T', ' ') }}
+          {{ whenUTC(t.at) }}
         </p>
       </div>
 

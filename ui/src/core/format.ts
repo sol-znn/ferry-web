@@ -15,6 +15,37 @@ export function stamp(iso: string | undefined): string {
   return iso.replace('T', ' ').replace(/\..*/, '').replace('Z', '')
 }
 
+/**
+ * A Unix time in seconds as "YYYY-MM-DD HH:MM:SS" UTC, or a dash when it is
+ * not a time a Date can hold. Total: it never throws. A timestamp on the
+ * board is chosen by whoever signed the event, a relay delivers whatever a
+ * key will sign, and `toISOString()` throws on a value outside the range a
+ * Date supports -- inside a shared render, that takes every neighbouring row
+ * down with the one bad one. Go refuses such stamps at the read boundary;
+ * this is what makes that not the only thing standing between a stamp and a
+ * blank inbox.
+ */
+export function whenUTC(seconds: number | undefined): string {
+  return (
+    isoUTC(seconds)
+      .replace('T', ' ')
+      .replace(/\.\d{3}Z$/, '') || '—'
+  )
+}
+
+/** The same as an ISO string, or '' when it cannot be one. */
+export function isoUTC(seconds: number | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return ''
+  const ms = seconds * 1000
+  // The range a Date is defined over: ±8.64e15 ms around the epoch.
+  if (Math.abs(ms) > 8.64e15) return ''
+  try {
+    return new Date(ms).toISOString()
+  } catch {
+    return ''
+  }
+}
+
 /** Whether a locktime that has already passed. Purely for display. */
 export function isPast(iso: string | undefined): boolean {
   if (!iso) return false

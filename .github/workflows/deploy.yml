@@ -106,6 +106,13 @@ jobs:
         working-directory: ui
         run: npm run commands
 
+      # The board's date formatting is total: a timestamp a relay delivers is
+      # the signer's choice, and one outside what a Date can hold must print a
+      # dash rather than throw inside a shared render.
+      - name: Date formatting checks
+        working-directory: ui
+        run: npm run dates
+
       # Development first, so the production build is what is left in
       # ui/public/ferry.wasm and dist/ when this job ends. Each smoke run
       # follows its own build and asserts the module reports the instance that
