@@ -214,9 +214,10 @@ func ParseContract(script []byte) (*ContractDetails, error) {
 	if !bytes.Equal(script, canonical) {
 		return nil, errors.New("script carries the atomic swap template's terms but is not its " +
 			"canonical encoding -- a push written with a longer opcode than it needs, most " +
-			"likely. Standard policy refuses to spend such a script, so the redeem this tool " +
-			"builds would be refused too while the counterparty's refund would not. Ask them " +
-			"to rebuild the contract with Ferry, or another tool that emits minimal pushes")
+			"likely. Standard policy refuses to spend through such a push, so whichever branch " +
+			"it sits in cannot be spent the way this tool spends it, and a contract only one " +
+			"side can spend is not a swap. Ask them to rebuild the contract with Ferry, or " +
+			"another tool that emits minimal pushes")
 	}
 
 	return &ContractDetails{

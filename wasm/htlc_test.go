@@ -393,18 +393,42 @@ func TestParseRefusesNonCanonicalPushes(t *testing.T) {
 		}
 	}
 
-	// Why it matters: the non-canonical script's own redeem is refused by the
-	// signer under standard policy -- this is the spend the victim would have
-	// needed -- while the canonical one's goes through.
+	// And the signer refuses to build a spend of the wrapped script at all --
+	// it parses first, and parsing is where the refusal now lives -- while the
+	// canonical one's goes through. (What standard policy would do to a spend
+	// of the wrapped script is not exercised here: nothing in this program
+	// signs one any more, which is the point.)
 	funding := FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a", Value: 100_000}
 	params := &chaincfg.RegressionNetParams
 	if _, err := BuildRedeem(canonical, funding, redeem, secret, regtestDest, 2.0, params); err != nil {
 		t.Fatalf("the canonical contract's redeem was refused: %v", err)
 	}
 	wrapped := assemble(minimal, pushdata1, minimal, minimal, minimal)
-	if _, err := BuildRedeem(wrapped, funding, redeem, secret, regtestDest, 2.0, params); err == nil {
-		t.Error("the signer accepted a redeem of the non-canonical contract; the finding's premise " +
-			"no longer holds and this test should say why")
+	if _, err := BuildRedeem(wrapped, funding, redeem, secret, regtestDest, 2.0, params); err == nil ||
+		!strings.Contains(err.Error(), "canonical") {
+		t.Errorf("the signer built a spend of the non-canonical contract, or refused it for another reason: %v", err)
+	}
+}
+
+// The canonical rebuild must accept every contract this program itself builds,
+// across the locktime encodings AddInt64 produces: four bytes, four bytes with
+// a sign-padding fifth, and the top of the 32-bit field.
+func TestCanonicalRoundTripAcrossLocktimeWidths(t *testing.T) {
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	for _, lock := range []int64{LockTimeThreshold, 0x7fffffff, 0x80000000, MaxLockTime} {
+		contract, err := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+		if err != nil {
+			t.Fatalf("locktime %#x: BuildContract: %v", lock, err)
+		}
+		got, err := ParseContract(contract)
+		if err != nil {
+			t.Errorf("locktime %#x: the canonical contract was refused: %v", lock, err)
+			continue
+		}
+		if got.LockTime != lock {
+			t.Errorf("locktime %#x round-tripped as %#x", lock, got.LockTime)
+		}
 	}
 }
 
