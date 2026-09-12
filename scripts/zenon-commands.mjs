@@ -239,6 +239,22 @@ const poisoned = (field, sep) => {
   else sw.zenon[field] = evil;
   return sw;
 };
+// The unlock shape prints the HTLC id as a comment; it too comes from outside.
+for (const [name, sep] of seps) {
+  const sw = {
+    ...base,
+    zenonHtlcIsOurs: false,
+    fundingCommitted: true,
+    secretHex: "cd".repeat(32),
+    zenon: { ...base.zenon, htlcId: `deadbeef${sep}printf PWNED` },
+  };
+  const bare = commands(sw);
+  ok(
+    `htlcId with ${name}: no uncommented line but receiveAll`,
+    bare.length === 1 && bare[0].startsWith("znn-cli receiveAll"),
+    JSON.stringify(bare),
+  );
+}
 for (const field of [
   "amountDisplay",
   "peerAddress",

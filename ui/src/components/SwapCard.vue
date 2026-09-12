@@ -1431,10 +1431,10 @@ async function downloadRecovery() {
           class="grid gap-2 rounded-md border border-warning/40 bg-warning/5 p-3"
         >
           <p class="text-sm text-warning">
-            This swap has no {{ missingZenonTerms.map((t) => t.label).join(' or ') }} on it, so the
-            Zenon HTLC cannot be verified &mdash; a check with nothing to compare against would pass
-            an HTLC that pays anybody. Add {{ missingZenonTerms.length === 1 ? 'it' : 'them' }}
-            here; each is a term of the trade and cannot be changed afterwards.
+            The Zenon HTLC cannot be verified yet: a check with nothing to compare against would
+            pass an HTLC that pays anybody. Missing here:
+            {{ (swap.missingZenonTerms ?? []).map((t) => t.reason).join('; ') }}. Each is a term of
+            the trade and cannot be changed once added.
           </p>
           <template v-for="t in missingZenonTerms" :key="t.key">
             <div v-if="t.key === 'selfAddress'" class="flex min-w-0 flex-wrap gap-2">
