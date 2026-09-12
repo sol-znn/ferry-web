@@ -610,7 +610,9 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 			// here -- a listing is not a transaction, and the fetch can fail --
 			// because signing is where it is required, and Redeem and Refund
 			// fill it in then if it is still missing.
-			if err := bindFunding(ctx, backend, sw, params); err != nil {
+			if err := bindFunding(ctx, backend, sw, params); err != nil && !errors.Is(err, errFundingMismatch) {
+				// A mismatch has said its own piece; this is for a transaction
+				// that could not be read at all.
 				sw.log("could not read the funding transaction to record what it pays: %v", err)
 			}
 
@@ -1102,9 +1104,9 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 			if !loggedOnce(sw, fundingMismatchNote) {
 				sw.log("%s", fundingMismatchNote)
 			}
-			return fmt.Errorf("the funding output %s:%d pays script %s, which is not this swap's "+
-				"contract %s. The contract on the record is not the one that was funded",
-				f.TxID, f.Vout, got, sw.ContractAddr)
+			return fmt.Errorf("%w: the funding output %s:%d pays script %s, which is not this "+
+				"swap's contract %s. The contract on the record is not the one that was funded",
+				errFundingMismatch, f.TxID, f.Vout, got, sw.ContractAddr)
 		}
 		f.PkScriptHex = got
 	}
@@ -1119,6 +1121,10 @@ func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *c
 	}
 	return nil
 }
+
+// errFundingMismatch marks a binding that failed because the chain answered
+// and disagreed, as opposed to one that could not be read.
+var errFundingMismatch = errors.New("funding pays another script")
 
 // fundingMismatchNote is logged once when the chain says the funding output
 // pays something other than this swap's contract: the record and the chain

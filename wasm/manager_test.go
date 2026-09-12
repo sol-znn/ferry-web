@@ -1992,14 +1992,20 @@ func TestAMismatchedFundingIsNeverBound(t *testing.T) {
 		t.Error("a mismatching funding reads as bound")
 	}
 	got, _ = m.Refresh(context.Background(), sw.ID)
-	notes := 0
+	notes, misread := 0, 0
 	for _, ev := range got.Events {
 		if strings.Contains(ev.Message, "NOT this swap's contract") {
 			notes++
 		}
+		if strings.Contains(ev.Message, "could not read the funding transaction") {
+			misread++
+		}
 	}
 	if notes != 1 {
 		t.Errorf("the mismatch was logged %d times over two polls, want once", notes)
+	}
+	if misread != 0 {
+		t.Errorf("a mismatch was also logged as a transaction that could not be read, %d time(s)", misread)
 	}
 	// planCreate: nothing locked against it, before any node is asked.
 	plan := &walletBlockPlan{Block: newWalletBlock(69, "z1qq6eg8n43g032hanpsfp02qcdmv7zfj3y2lt5d")}
