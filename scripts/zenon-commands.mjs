@@ -132,9 +132,8 @@ for (const [name, sw, ctx] of [
     text.includes("As of the last refresh: the contract holds 100000 sat"),
   );
   ok(
-    "with nothing executable but the reclaim",
-    commands(sw).length === 1 &&
-      commands(sw)[0].startsWith("znn-cli htlc.reclaim "),
+    "with nothing executable but, at most, a reclaim",
+    commands(sw).every((l) => l.startsWith("znn-cli htlc.reclaim ")),
     commands(sw).join(" | "),
   );
 }
@@ -156,7 +155,7 @@ ok(
     btcLegIsInitiators: false,
     secretArrivesOnZenon: false,
     fundingCommitted: true,
-  }).some((l) => l.includes(` 1 ${"ab".repeat(32)}`)),
+  }).some((l) => l.includes(` 1 '${"ab".repeat(32)}'`)),
 );
 ok(
   "the side that unlocks the counterparty's HTLC is shown the id, not a runnable unlock",
@@ -267,8 +266,8 @@ for (const field of [
     const text = znnCommands(sw);
     const bare = commands(sw);
     ok(
-      `${field} with ${name}: no uncommented line but the reclaim`,
-      bare.length === 1 && bare[0].startsWith("znn-cli htlc.reclaim "),
+      `${field} with ${name}: no uncommented line but, at most, a reclaim`,
+      bare.every((l) => l.startsWith("znn-cli htlc.reclaim ")),
       JSON.stringify(bare),
     );
     ok(
@@ -276,6 +275,172 @@ for (const field of [
       text.includes("# printf PWNED"),
     );
   }
+}
+
+section("every value in a runnable line is one shell word, whatever it holds");
+
+// A small POSIX reader that does not execute anything, over the whole
+// runnable block at once, the way a terminal receives a paste: single quotes
+// group, and a newline inside them is part of the word; a backslash outside
+// quotes escapes the next character, which is how a quoted single quote is
+// written ('\\''); outside quotes whitespace splits, a newline ends a command,
+// and $ ` ; | & ( ) < > " are metacharacters a real shell would act on. It
+// returns the commands a shell would build, or the metacharacter it found
+// bare.
+function readShell(block) {
+  const cmds = [];
+  let argv = [];
+  let cur = "";
+  let inWord = false;
+  let i = 0;
+  const endWord = () => {
+    if (inWord) argv.push(cur);
+    cur = "";
+    inWord = false;
+  };
+  while (i < block.length) {
+    const ch = block[i];
+    if (ch === "'") {
+      const end = block.indexOf("'", i + 1);
+      if (end < 0) return { error: "unterminated quote" };
+      cur += block.slice(i + 1, end);
+      inWord = true;
+      i = end + 1;
+      continue;
+    }
+    if (ch === "#" && !inWord) {
+      // A comment, as a shell reads one: a bare # where a word would start,
+      // OUTSIDE any quote, to the end of the line. A # inside a quoted value
+      // -- a newline followed by # inside a single-quoted word -- is text.
+      const nl = block.indexOf("\n", i);
+      i = nl < 0 ? block.length : nl;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= block.length) return { error: "trailing backslash" };
+      cur += block[i + 1];
+      inWord = true;
+      i += 2;
+      continue;
+    }
+    if (ch === "\n") {
+      endWord();
+      if (argv.length) cmds.push(argv);
+      argv = [];
+      i++;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      endWord();
+      i++;
+      continue;
+    }
+    if ('$`;|&()<>"'.includes(ch)) return { error: `bare ${ch}` };
+    cur += ch;
+    inWord = true;
+    i++;
+  }
+  endWord();
+  if (argv.length) cmds.push(argv);
+  return { cmds };
+}
+
+const zenonFirst = {
+  ...base,
+  btcLegIsInitiators: false,
+  secretArrivesOnZenon: false,
+  fundingCommitted: true,
+  zenon: { ...base.zenon, htlcId: "deadbeef" },
+};
+const evils = [
+  "1$(id)",
+  "`id`",
+  "10; rm -rf /",
+  "a b",
+  "it's",
+  "x\ny",
+  "x\n# not a comment\nprintf PWNED",
+  "$HOME",
+];
+for (const [field, where] of [
+  ["peerAddress", "zenon"],
+  ["tokenStandard", "zenon"],
+  ["amountDisplay", "zenon"],
+  ["htlcId", "zenon"],
+  ["selfAddress", "zenon"],
+  ["expirationHours", "zenon"],
+  ["secretHashHex", "top"],
+  ["nodeURL", "ctx"],
+]) {
+  for (const evil of evils) {
+    const sw = { ...zenonFirst, zenon: { ...zenonFirst.zenon } };
+    let ctx = { nodeURL: "wss://node.example:35998" };
+    if (where === "zenon") sw.zenon[field] = evil;
+    else if (where === "top") sw[field] = evil;
+    else ctx = { nodeURL: evil };
+    // The whole block, as a terminal would receive it: the reader drops the
+    // comments itself, the way a shell does, so a quoted value that happens
+    // to contain a newline and a # is not mistaken for one. Placeholders the
+    // user fills in are angle-bracketed by design; a shell would read them as
+    // redirections, which is exactly why they are unmistakable. They are
+    // blanked before reading.
+    const block = znnCommands(sw, ctx).replace(/<[^>]+>/g, "PLACEHOLDER");
+    const r = readShell(block);
+    const bad = r.error ? `${r.error} in: ${block.slice(0, 160)}` : null;
+    // Every argument that carries the value carries it whole and alone: no
+    // occurrence anywhere in the block is glued to anything else.
+    const carrying = r.error
+      ? []
+      : r.cmds.flat().filter((t) => t.includes(evil));
+    const found = carrying.length > 0 && carrying.every((t) => t === evil);
+    ok(
+      `${field} = ${JSON.stringify(evil)}: no bare metacharacter in any runnable line`,
+      !bad,
+      bad ?? "",
+    );
+    ok(
+      `${field} = ${JSON.stringify(evil)}: the value arrives as exactly one argument`,
+      found,
+    );
+  }
+}
+
+section(
+  "a runnable create needs every term of the trade; otherwise it is a comment",
+);
+for (const [name, missing] of [
+  ["no counterparty address", { peerAddress: "" }],
+  ["no amount", { amountDisplay: "" }],
+  ["no hours yet", { expirationHours: 0 }],
+]) {
+  const sw = { ...zenonFirst, zenon: { ...zenonFirst.zenon, ...missing } };
+  const runnable = commands(sw);
+  const text = znnCommands(sw);
+  ok(
+    `${name}: no runnable htlc.create`,
+    !runnable.some((l) => l.includes("htlc.create")),
+    runnable.join(" | "),
+  );
+  ok(
+    `${name}: the line is shown as a comment to complete`,
+    text.includes("# znn-cli htlc.create") && text.includes("Not runnable yet"),
+  );
+}
+{
+  const sw = { ...zenonFirst, secretHashHex: "" };
+  ok(
+    "no hashlock: no runnable htlc.create",
+    !commands(sw).some((l) => l.includes("htlc.create")) &&
+      znnCommands(sw).includes("Not runnable yet"),
+  );
+}
+{
+  const sw = { ...zenonFirst, zenon: { ...zenonFirst.zenon, htlcId: "" } };
+  ok(
+    "no htlc id: the reclaim is a comment, not a command",
+    !commands(sw).some((l) => l.includes("htlc.reclaim")) &&
+      znnCommands(sw).includes("# znn-cli htlc.reclaim <your htlc id>"),
+  );
 }
 
 console.log(fails === 0 ? "\nall checks passed" : `\n${fails} FAILED`);

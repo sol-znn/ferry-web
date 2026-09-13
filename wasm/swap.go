@@ -721,6 +721,20 @@ func DecodeOffer(s string) (*Offer, error) {
 	if o.ZenonAmt != "" && zeroAmount(o.ZenonAmt) {
 		return nil, errors.New("offer's Zenon amount is zero, which is not an amount")
 	}
+	// The address and the token are checked here too, not only when the form
+	// they are copied into is submitted: an offer is a stranger's input, and
+	// every field of it that can reach a printed command is held to the shape
+	// of the thing it claims to be at the door it comes in by.
+	if o.ZenonAddr != "" {
+		if _, err := znn.ParseAddress(o.ZenonAddr); err != nil {
+			return nil, fmt.Errorf("offer's Zenon address: %w", err)
+		}
+	}
+	if o.ZenonToken != "" {
+		if _, err := znn.ParseTokenStandard(o.ZenonToken); err != nil {
+			return nil, fmt.Errorf("offer's Zenon token: %w", err)
+		}
+	}
 	return &o, nil
 }
 
