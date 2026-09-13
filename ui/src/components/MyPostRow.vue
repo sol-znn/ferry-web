@@ -11,7 +11,7 @@ import {
 import {Badge, Button} from 'nom-ui'
 import InfoTip from './InfoTip.vue'
 import {EXPIRING_SOON_SECONDS, formatRate, rate, secondsLeft, timeLeft} from '@/core/board'
-import {btc, tokenName} from '@/core/format'
+import {btc, isoUTC, tokenName} from '@/core/format'
 import type {MyPost} from '@/types'
 
 // One of your own posts.
@@ -82,7 +82,7 @@ const soon = computed(
         <span
           class="inline-flex items-center gap-1 text-xs"
           :class="soon ? 'text-warning' : 'text-muted-foreground'"
-          :title="new Date(post.expiresAt * 1000).toISOString()"
+          :title="isoUTC(post.expiresAt)"
         >
           <ClockIcon class="size-3" />
           {{ timeLeft(post, nowMs) }}

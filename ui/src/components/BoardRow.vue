@@ -24,7 +24,7 @@ import {
 } from '@/core/board'
 import {chainList, chainsForPost, missingChains, type ChainId} from '@/core/chains'
 import {useBoard} from '@/core/composables/useBoard'
-import {btc, tokenName} from '@/core/format'
+import {btc, isoUTC, tokenName} from '@/core/format'
 import {shortAddr} from '@/core/unisat'
 import type {Listing} from '@/types'
 
@@ -194,7 +194,7 @@ const missing = computed(() => missingChains(chainsForPost(post.value), props.pr
         <span
           class="inline-flex items-center gap-1"
           :class="soon ? 'text-warning' : ''"
-          :title="new Date(post.expiresAt * 1000).toISOString()"
+          :title="isoUTC(post.expiresAt)"
         >
           <ClockIcon class="size-3" />
           {{ timeLeft(post, nowMs) }}
