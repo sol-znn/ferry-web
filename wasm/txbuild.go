@@ -45,6 +45,28 @@ type FundingOutput struct {
 	// Confirmations is that block's depth as of the last Refresh, counting the
 	// block itself — so a freshly mined funding reads 1, not 0.
 	Confirmations int64 `json:"confirmations,omitempty"`
+
+	// PkScriptHex is the script the output actually pays, read off the funding
+	// transaction itself, so that a spend is built against what the chain
+	// holds rather than against whatever contract the record carries at the
+	// time. Recorded when the funding is adopted; filled in before signing if
+	// an older record lacks it. A spend whose contract does not hash to this
+	// is refused before it is signed.
+	PkScriptHex string `json:"pkScriptHex,omitempty"`
+}
+
+// bindsTo reports whether this funding output, as the chain describes it, is
+// an output of the given contract. Unknown (no script recorded) is not a match
+// and not a mismatch; callers that can read the chain fill it in first.
+func (f FundingOutput) bindsTo(contract []byte, params *chaincfg.Params) (bool, error) {
+	if f.PkScriptHex == "" {
+		return true, nil
+	}
+	want, err := contractPkScript(contract, params)
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(f.PkScriptHex, hex.EncodeToString(want)), nil
 }
 
 // FundingBroadcast records that this browser sent a payment to the contract, to
@@ -149,6 +171,19 @@ func buildSpend(contract []byte, funding FundingOutput, key *SwapKey, secret []b
 	contractPkScript, err := contractPkScript(contract, params)
 	if err != nil {
 		return nil, err
+	}
+	// The outpoint is the swap's; the script it pays is the chain's. If the
+	// record knows that script, the contract being spent has to hash to it --
+	// otherwise this would be a signature over a spend of somebody else's
+	// output, which the network refuses and the local engine, fed the contract
+	// rather than the chain, would not.
+	if bound, err := funding.bindsTo(contract, params); err != nil {
+		return nil, err
+	} else if !bound {
+		return nil, fmt.Errorf("the funding output %s:%d pays script %s, which is not this "+
+			"contract's. The contract on this swap is not the one that was funded; restore the "+
+			"one that was, or spend the output from a recovery file made when it was funded",
+			funding.TxID, funding.Vout, funding.PkScriptHex)
 	}
 
 	newTx := func() *wire.MsgTx {

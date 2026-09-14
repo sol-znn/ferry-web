@@ -274,8 +274,15 @@ ok('recovery exports the key as WIF', typeof rec.privateKeyWIF === 'string' && r
 ok('recovery carries the contract', rec.contractHex === built.contractHex)
 ok('recovery names the contract address', rec.contractAddr === built.contractAddr)
 
-const rebuilt = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5})
+// The hand-edited funding above does not say what the output pays, as a
+// file from before that was recorded would not. Offline, that cannot be
+// checked, so the rebuild is refused until the user says to build anyway --
+// and then says on the result what it assumed.
+const unbound = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5})
+ok('a file that does not record what the funding pays is not built unasked', /does not record what the funding output pays/.test(unbound.error ?? ''), unbound.error ?? 'built')
+const rebuilt = await call('rebuild', {file: JSON.stringify(rec), feeRate: 5, allowUnboundFunding: true})
 ok('a refund is rebuilt from the file alone', rebuilt.action === 'refund', rebuilt.error)
+ok('and carries the assumption it was built on', /assumption/.test(rebuilt.warning ?? ''), rebuilt.warning)
 ok('it is signed and serialised', /^[0-9a-f]+$/.test(rebuilt.rawHex ?? ''))
 ok('it pays the address in the file', rebuilt.destAddr === DEST)
 ok('it is not yet valid, and says so', Boolean(rebuilt.notYet), JSON.stringify(rebuilt.validFrom))
@@ -284,13 +291,13 @@ ok('value plus fee equals the funding', rebuilt.value + rebuilt.fee === 400000)
 
 // The refund branch holds this key. Asking it to redeem must be refused with an
 // explanation rather than producing a transaction no node will accept.
-const wrongBranch = await call('rebuild', {file: JSON.stringify(rec), secretHex: 'ab'.repeat(32)})
+const wrongBranch = await call('rebuild', {file: JSON.stringify(rec), secretHex: 'ab'.repeat(32), allowUnboundFunding: true})
 ok('redeeming with a refund-branch key is refused', /REFUND branch/.test(wrongBranch.error ?? ''), wrongBranch.error)
 
 // A file whose stated address does not hash to its own contract has been
 // edited, and neither half can be trusted.
 const tampered = {...rec, contractAddr: '2N1SP7r92ZZJvYEQ4Xv7oVvGkVh7YQnCF8u'}
-const refused = await call('rebuild', {file: JSON.stringify(tampered)})
+const refused = await call('rebuild', {file: JSON.stringify(tampered), allowUnboundFunding: true})
 ok('an inconsistent recovery file is refused', /inconsistent/.test(refused.error ?? ''), refused.error)
 
 // Same for the locktime. "valid from" is what tells the user when to broadcast,
@@ -298,7 +305,7 @@ ok('an inconsistent recovery file is refused', /inconsistent/.test(refused.error
 // out of the contract — and a file that disagrees with its own contract about
 // when the refund branch opens is refused rather than quietly preferred.
 const movedLock = {...rec, lockTime: rec.lockTime + 86400}
-const refusedLock = await call('rebuild', {file: JSON.stringify(movedLock)})
+const refusedLock = await call('rebuild', {file: JSON.stringify(movedLock), allowUnboundFunding: true})
 ok(
   "a recovery file whose lockTime disagrees with its contract is refused",
   /inconsistent/.test(refusedLock.error ?? ''),
@@ -917,6 +924,20 @@ const auditedWrapped = await call('audit', {id: receiver2.id, contractHex: wrapp
 ok('the same terms in a non-canonical encoding are refused', /canonical/.test(auditedWrapped.error ?? ''), auditedWrapped.error ?? 'accepted')
 const kept = await call('get', {id: receiver2.id})
 ok('and the accepted contract is not displaced', kept.contractHex === canonicalHex, kept.contractHex)
+section('a contract already on the swap is answered, not re-applied')
+
+// A session resends values, and a re-sync says everything again. The same
+// contract bytes arriving twice are nothing new; the record does not grow an
+// event for each.
+{
+  const sender = await call('create', {role: 'initiator', leg: 'send', amountSats: 400000, destAddr: DEST, settings: SETTINGS})
+  const taker = await call('create', {role: 'participant', leg: 'receive', amountSats: 400000, destAddr: DEST, secretHashHex: sender.secretHashHex, settings: SETTINGS})
+  const forTaker = await call('counterparty', {id: sender.id, pkhHex: taker.key.pkhHex})
+  const once = await call('audit', {id: taker.id, contractHex: forTaker.contractHex})
+  const twice = await call('audit', {id: taker.id, contractHex: forTaker.contractHex})
+  ok('the first audit takes the contract', !once.error && once.contractHex === forTaker.contractHex, once.error)
+  ok('the second is the same swap back, with nothing added', !twice.error && twice.contractHex === forTaker.contractHex && twice.events.length === once.events.length, twice.error ?? `${once.events.length} -> ${twice.events.length}`)
+}
 
 section('the boundary refuses what it does not understand')
 
@@ -951,6 +972,204 @@ ok(
 
 const missing = await call('get', {id: 'deadbeefdeadbeef'})
 ok('a missing swap answers with an error', /no swap with id/.test(missing.error ?? ''), missing.error)
+
+section('every call is made under the cross-tab lock, and however the lock answers, the call answers')
+
+// Node has no Web Locks API, so above this point every call ran unlocked, as
+// the module allows where there is no document. What follows stands in a lock
+// manager for the browser's and checks the bridge around it: whatever the
+// manager answers, the call must answer too, because a call that never
+// settles leaves the page with a spinner and the user with no way to reach
+// their swap. A manager that never answers at all is the one shape nothing
+// here can rescue, and none of these stands in for it.
+//
+// The manager is replaced per scenario rather than mocked once: what the
+// scenarios differ in is exactly the manager's behaviour.
+const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+const installLocks = (locks) =>
+  Object.defineProperty(globalThis, 'navigator', {value: {locks}, configurable: true})
+const restoreNavigator = () => Object.defineProperty(globalThis, 'navigator', savedNavigator)
+
+// A rejection nobody handles is a bug in the bridge whichever way the call
+// went; Node would otherwise turn it into a crash with no assertion attached.
+const unhandled = []
+const noteUnhandled = (reason) => unhandled.push(String(reason))
+process.on('unhandledRejection', noteUnhandled)
+
+const HANG_MS = 2000
+const settles = (promise) =>
+  Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r({error: `(no answer within ${HANG_MS} ms)`}), HANG_MS)),
+  ])
+const lockName = `ferry:${swapPrefix}`
+
+// 1. The request is refused before the lock is ever granted. The spec lets a
+//    manager reject with a SecurityError, and a rejected request never invokes
+//    the holder, so nothing inside the holder can answer the call.
+installLocks({
+  request: () => Promise.reject(new DOMException('locks are unavailable to this origin', 'SecurityError')),
+})
+const lockRefused = await settles(call('get', {id}))
+ok(
+  'a lock refused before it is granted answers the call with the refusal',
+  /lock/i.test(lockRefused.error ?? '') && /SecurityError/.test(lockRefused.error ?? ''),
+  JSON.stringify(lockRefused),
+)
+
+// 2. A manager that grants in order and holds each lock until the holder's
+//    promise settles, which is what the browser's does. Two calls issued at
+//    once must run one after the other under the instance's lock name.
+const trace = []
+const queues = new Map()
+installLocks({
+  request(name, holder) {
+    const prev = queues.get(name) ?? Promise.resolve()
+    const run = prev.then(async () => {
+      trace.push(`grant ${name}`)
+      await holder({name, mode: 'exclusive'})
+      trace.push(`release ${name}`)
+    })
+    queues.set(name, run.catch(() => {}))
+    return run
+  },
+})
+const [firstUnderLock, secondUnderLock] = await settles(
+  Promise.all([call('get', {id}), call('get', {id: 'deadbeefdeadbeef'})]),
+).then((r) => (Array.isArray(r) ? r : [r, r]))
+ok('a call under the lock answers as it does without one', firstUnderLock.id === id, JSON.stringify(firstUnderLock))
+ok('a second call under the lock answers too', /no swap with id/.test(secondUnderLock.error ?? ''), JSON.stringify(secondUnderLock))
+ok(
+  'two calls issued at once run one after the other, under the instance lock name',
+  trace.join(', ') === [`grant ${lockName}`, `release ${lockName}`, `grant ${lockName}`, `release ${lockName}`].join(', '),
+  trace.join(', '),
+)
+
+// 3. The request rejects after the holder has run and released. A conforming
+//    manager settles the request with the holder's own outcome, so this shape
+//    does not arise from one; it is kept because the call already has its
+//    answer, and a bridge that tolerated a second answer only by luck would
+//    send twice on a full channel and block the event loop.
+installLocks({
+  request: async (name, holder) => {
+    await holder({name, mode: 'exclusive'})
+    throw new DOMException('lock broken by another request with the "steal" option', 'AbortError')
+  },
+})
+const stolenAfter = await settles(call('get', {id}))
+ok('a lock stolen after the call ran does not change its answer', stolenAfter.id === id, JSON.stringify(stolenAfter))
+const afterStolen = await settles(call('get', {id}))
+ok('and the call after it still answers', afterStolen.id === id, JSON.stringify(afterStolen))
+
+// 3b. The lock is stolen while the holder is still running: the request
+//     rejects at once, and the work answers later. The work's answer is the
+//     one the page gets, because the work is what happened; reporting a
+//     refusal over a save that landed would be the lie. The call is one that
+//     reaches for a node, so the work yields to the event loop and the
+//     rejection actually arrives first.
+installLocks({
+  request: (name, holder) => {
+    void holder({name, mode: 'exclusive'})
+    return Promise.reject(new DOMException('lock broken by another request with the "steal" option', 'AbortError'))
+  },
+})
+const stolenDuring = await settles(
+  call('estimate', {id, settings: {...SETTINGS, btcEsplora: 'http://127.0.0.1:1'}}),
+)
+ok(
+  'a lock stolen while the call runs still answers with the work',
+  stolenDuring.feeRateFrom === 'fallback' && !stolenDuring.error,
+  JSON.stringify(stolenDuring),
+)
+
+// 4. The request throws synchronously instead of returning a promise.
+installLocks({
+  request: () => {
+    throw new TypeError('request is not a function today')
+  },
+})
+const threwSync = await settles(call('get', {id}))
+ok('a manager that throws answers the call with the error', /request is not a function today/.test(threwSync.error ?? ''), JSON.stringify(threwSync))
+
+// 4b. The request grants and then throws. The work is already under way,
+//     so, as with a rejection after grant, the work's answer is the call's.
+//     The call reaches for a node for the same reason as in 3b.
+installLocks({
+  request: (name, holder) => {
+    void holder({name, mode: 'exclusive'})
+    throw new TypeError('boom after grant')
+  },
+})
+const threwAfterGrant = await settles(
+  call('estimate', {id, settings: {...SETTINGS, btcEsplora: 'http://127.0.0.1:1'}}),
+)
+ok(
+  'a manager that grants and then throws still answers with the work',
+  threwAfterGrant.feeRateFrom === 'fallback' && !threwAfterGrant.error,
+  JSON.stringify(threwAfterGrant),
+)
+
+// 5. The request settles normally, and the callbacks the bridge handed to it
+//    are let go afterwards. Go keeps a callback registered until it is
+//    released, so one left behind per call is memory the tab never gets
+//    back. A thenable manager keeps hold of the holder and of the handlers
+//    the bridge attaches; invoking a released one makes Go log "call to
+//    released function" rather than run anything, which is the observable
+//    this checks.
+const consoleError = console.error
+const releasedOf = (callbacks) => {
+  const logged = []
+  console.error = (...parts) => logged.push(parts.join(' '))
+  try {
+    for (const cb of callbacks) cb?.(new Error('late'))
+  } finally {
+    console.error = consoleError
+  }
+  return logged.filter((line) => /call to released function/.test(line)).length
+}
+let attached
+installLocks({
+  request: (name, holder) => ({
+    then(onFulfilled, onRejected) {
+      attached = {holder, onFulfilled, onRejected}
+      holder({name, mode: 'exclusive'}).then(onFulfilled, onRejected)
+    },
+  }),
+})
+const fulfilledLock = await settles(call('get', {id}))
+ok('a call whose request is a thenable answers', fulfilledLock.id === id, JSON.stringify(fulfilledLock))
+ok(
+  'the holder and both handlers the request took are released once it settles',
+  [attached?.holder, attached?.onFulfilled, attached?.onRejected].every((cb) => typeof cb === 'function') &&
+    releasedOf([attached.holder, attached.onFulfilled, attached.onRejected]) === 3,
+  `attached ${JSON.stringify(Object.keys(attached ?? {}))}`,
+)
+
+// 5b. The same, when the request is refused: the refusal answers the call,
+//     and both handlers are let go all the same.
+let attachedRefused
+installLocks({
+  request: (_name, holder) => ({
+    then(onFulfilled, onRejected) {
+      attachedRefused = {holder, onFulfilled, onRejected}
+      onRejected(new DOMException('locks are unavailable to this origin', 'SecurityError'))
+    },
+  }),
+})
+const refusedThenable = await settles(call('get', {id}))
+ok('a refusal through a thenable answers the call with the refusal', /SecurityError/.test(refusedThenable.error ?? ''), JSON.stringify(refusedThenable))
+ok(
+  'the holder it never invoked and both handlers are released after a refusal too',
+  [attachedRefused?.holder, attachedRefused?.onFulfilled, attachedRefused?.onRejected].every((cb) => typeof cb === 'function') &&
+    releasedOf([attachedRefused.holder, attachedRefused.onFulfilled, attachedRefused.onRejected]) === 3,
+  `attached ${JSON.stringify(Object.keys(attachedRefused ?? {}))}`,
+)
+
+restoreNavigator()
+// Let any rejection the scenarios left behind surface before it is counted.
+await new Promise((r) => setTimeout(r, 20))
+process.off('unhandledRejection', noteUnhandled)
+ok('no scenario left a rejection unhandled', unhandled.length === 0, unhandled.join(' | '))
 
 // ---------- result ----------
 
