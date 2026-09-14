@@ -322,7 +322,11 @@ through exactly the check it went through when it was pasted by hand: a contract
 is audited against your own swap and its locktime ordering, a pubkey hash is
 matched, an HTLC id is verified against your Zenon node. Anything that does not
 match is refused, the swap is left as it was, and the refusal is the loudest
-line in the transcript. A session removes the typing, not the checking.
+line in the transcript. A session removes the typing, not the checking. And once
+anything has been staked on a contract — money seen or sent to it, a Zenon HTLC
+created against it — its bytes are the swap's identity: the same contract sent
+again is answered with the swap as it is, and a different one is refused however
+well it audits, because the funding pays the contract that was there first.
 
 The preimage is the one exception, and it is not an oversight: there is no field
 for it on the wire format and no code path that would accept one. Revealing it

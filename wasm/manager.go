@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/zenon/ferry-web/wasm/chain"
 	"github.com/zenon/ferry-web/wasm/znn"
 )
@@ -377,6 +378,18 @@ func (m *Manager) SetCounterpartyPKH(id, pkhHex string) (*Swap, error) {
 	if err != nil || len(pkh) != 20 {
 		return nil, errors.New("pubkey hash must be 20 bytes of hex")
 	}
+	// A resend of the hash already built into the contract is nothing new.
+	// A different one after the contract has been staked on would rebuild the
+	// contract under a funding that pays the old one, so it is refused.
+	if bytes.Equal(pkh, sw.CounterpartyPKH) && len(sw.Contract) > 0 {
+		return sw, nil
+	}
+	if committed, why := sw.ContractCommitted(); committed {
+		return nil, fmt.Errorf("the contract cannot change now: %s. It was built for their "+
+			"pubkey hash %s and a different one (%s) would build a different contract, at a "+
+			"different address, under the same funding. If the counterparty needs a different "+
+			"key, that is a new swap", why, hex.EncodeToString(sw.CounterpartyPKH), hex.EncodeToString(pkh))
+	}
 	sw.CounterpartyPKH = pkh
 	if err := sw.BuildSwapContract(); err != nil {
 		return nil, err
@@ -416,6 +429,31 @@ func (m *Manager) AuditContract(id, contractHex string) (*Swap, error) {
 	params, err := sw.Params()
 	if err != nil {
 		return nil, err
+	}
+
+	// The contract already on this swap is what its funding, its refund and
+	// its Zenon leg were committed against. The same bytes again -- a session
+	// resend, a re-sync, a second paste -- change nothing and are answered
+	// with the swap as it is. Different bytes after a commitment are refused,
+	// however well they audit: accepting them would leave the funding
+	// outpoint paying the old script while every spend is built for the new
+	// one. Before a commitment a re-audit still replaces, which is how a
+	// counterparty rebuilding with a better locktime gets a second chance.
+	if len(sw.Contract) > 0 {
+		if bytes.Equal(contract, sw.Contract) {
+			return sw, nil
+		}
+		if committed, why := sw.ContractCommitted(); committed {
+			return nil, fmt.Errorf("this swap's contract cannot change now: %s. A different "+
+				"contract arrived (%s, at %s) and was refused; the one already on the swap "+
+				"stays. If the counterparty has rebuilt the contract, treat that as a new swap",
+				why, hex.EncodeToString(contract[:8])+"…", func() string {
+					if a, aerr := ContractAddress(contract, params); aerr == nil {
+						return a.String()
+					}
+					return "an unknown address"
+				}())
+		}
 	}
 
 	if !bytes.Equal(details.PkhRedeem, sw.Key.PKH) {
@@ -568,6 +606,15 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 				Confirmed:   best.Status.Confirmed,
 				BlockHeight: best.Status.BlockHeight,
 			}
+			// What the output pays, from the transaction itself. Best effort
+			// here -- a listing is not a transaction, and the fetch can fail --
+			// because signing is where it is required, and Redeem and Refund
+			// fill it in then if it is still missing.
+			if err := bindFunding(ctx, backend, sw, params); err != nil && !errors.Is(err, errFundingMismatch) {
+				// A mismatch has said its own piece; this is for a transaction
+				// that could not be read at all.
+				sw.log("could not read the funding transaction to record what it pays: %v", err)
+			}
 
 			// Only on a change: this block runs on every refresh while the
 			// contract is short, and repeating these lines would bury the
@@ -589,6 +636,19 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 	// double-spend away from never having happened.
 	trackFundingDepth(ctx, sw, backend)
 
+	// And what it pays, on every poll until it is known, whichever leg this
+	// is. A funding that is not bound is not acted on: the card offers no
+	// Zenon action and no redeem against it, and no refund is pre-signed. So
+	// a chain that could not be read the moment the funding appeared holds
+	// the swap, once in the log, rather than letting it move on unverified.
+	if sw.Funding != nil && sw.Funding.PkScriptHex == "" {
+		if err := bindFunding(ctx, backend, sw, params); err != nil {
+			if !loggedOnce(sw, noBindingNote) {
+				sw.log("%s", noBindingNote)
+			}
+		}
+	}
+
 	// A funded contract with nowhere to pay is the one shape where the pre-signed
 	// refund silently does not happen. Say it on the card rather than leaving the
 	// user with a recovery file that quietly has no transaction in it.
@@ -600,17 +660,25 @@ func (m *Manager) Refresh(ctx context.Context, id string) (*Swap, error) {
 	// the refund so the user can save it. Recovery must not depend on ferry
 	// still being around later.
 	if sw.Funding != nil && sw.RefundTx == nil && sw.Leg == LegSend && sw.DestAddr != "" {
-		feeRate, err := backend.FeeRate(ctx, 6)
-		if err != nil {
-			feeRate = 2.0
-		}
-		refund, err := BuildRefund(sw.Contract, *sw.Funding, sw.Key, sw.DestAddr, feeRate, params)
-		if err != nil {
-			sw.log("could not pre-sign refund: %v", err)
+		// Not before the funding is bound to what it pays. A pre-signed refund
+		// is the one artefact that must be right with nobody watching, and a
+		// signature over a spend of an output that pays another script is a
+		// recovery file that does not recover. Tried again on the next poll.
+		if err := bindFunding(ctx, backend, sw, params); err != nil {
+			// Already said, above, once.
 		} else {
-			sw.RefundTx = refund
-			sw.log("refund transaction pre-signed (%s, %d sat fee); it becomes broadcastable at %s",
-				refund.TxID, refund.Fee, time.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))
+			feeRate, err := backend.FeeRate(ctx, 6)
+			if err != nil {
+				feeRate = 2.0
+			}
+			refund, err := BuildRefund(sw.Contract, *sw.Funding, sw.Key, sw.DestAddr, feeRate, params)
+			if err != nil {
+				sw.log("could not pre-sign refund: %v", err)
+			} else {
+				sw.RefundTx = refund
+				sw.log("refund transaction pre-signed (%s, %d sat fee); it becomes broadcastable at %s",
+					refund.TxID, refund.Fee, time.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))
+			}
 		}
 	}
 
@@ -941,6 +1009,130 @@ func payoutAddress(sw *Swap, asked string) (string, error) {
 	return sw.DestAddr, nil
 }
 
+// saveOutcome records what happened on the chain. A broadcast is not undone
+// by a refusal to save it, so a save that finds the record changed in the
+// meantime -- a refresh, an archive -- reloads, applies the outcome to the
+// record as it now is, and saves that; the concurrent change is kept, the
+// outcome is not lost, and the caller gets back the record that was written.
+//
+// The outcome belongs to one contract and one funding output -- the ones the
+// transaction spent. A reloaded record that names a different output or
+// contract is a different swap wearing the same id, and the outcome is not
+// attached to it; a record that is gone is not brought back. Either way the
+// transaction id is in the error, so what happened on the chain is not lost
+// with the record.
+func (m *Manager) saveOutcome(sw *Swap, txid string, apply func(*Swap)) (*Swap, error) {
+	contract, funding := sw.Contract, *sw.Funding
+	apply(sw)
+	for attempt := 0; ; attempt++ {
+		err := m.Store.Save(sw)
+		if err == nil {
+			return sw, nil
+		}
+		if !errors.Is(err, ErrStaleWrite) || attempt == 3 {
+			return nil, fmt.Errorf("transaction %s was broadcast but could not be recorded: %w", txid, err)
+		}
+		fresh, lerr := m.Store.Load(sw.ID)
+		if lerr != nil {
+			return nil, fmt.Errorf("transaction %s was broadcast, but the swap is gone from the "+
+				"store and the outcome could not be recorded: %w", txid, lerr)
+		}
+		if fresh.Funding == nil || fresh.Funding.TxID != funding.TxID || fresh.Funding.Vout != funding.Vout ||
+			!bytes.Equal(fresh.Contract, contract) {
+			return nil, fmt.Errorf("transaction %s was broadcast, spending %s:%d of contract %s, but the "+
+				"swap now names a different funding or contract; the outcome was not recorded on it",
+				txid, funding.TxID, funding.Vout, sw.ContractAddr)
+		}
+		apply(fresh)
+		sw = fresh
+	}
+}
+
+// noBindingNote is logged once while a funding cannot be bound to what it
+// pays, which is what holds the pre-signed refund back.
+const noBindingNote = "the funding transaction could not be read to confirm the output pays " +
+	"this contract, so nothing is built or offered against this funding yet; it is tried again on " +
+	"the next refresh"
+
+// bindFunding records, from the funding transaction itself, the script and
+// value of the output this swap adopted, and refuses if that script is not
+// this swap's contract. The outpoint is the swap's; what it pays is the
+// chain's; and a contract that has been swapped out from under a funding --
+// a second contract over a session, a record edited by hand -- is caught here,
+// before a signature is made over a spend the network would refuse.
+//
+// Idempotent, and a no-op when the record already carries the script: then
+// the comparison alone runs, and needs no chain.
+func bindFunding(ctx context.Context, backend chain.Backend, sw *Swap, params *chaincfg.Params) error {
+	f := sw.Funding
+	if f == nil {
+		return nil
+	}
+	if f.PkScriptHex == "" {
+		raw, err := backend.RawTx(ctx, f.TxID)
+		if err != nil {
+			return fmt.Errorf("fetch funding transaction %s: %w", f.TxID, err)
+		}
+		tx, err := DecodeRawTx(raw)
+		if err != nil {
+			return fmt.Errorf("funding transaction %s: %w", f.TxID, err)
+		}
+		// The transaction served has to be the one asked for. A backend that
+		// answers with another -- one paying this contract, say -- would bind
+		// the funding to a script the real output does not have.
+		if got := tx.TxHash().String(); !strings.EqualFold(got, f.TxID) {
+			return fmt.Errorf("the backend served transaction %s when asked for %s", got, f.TxID)
+		}
+		if uint64(f.Vout) >= uint64(len(tx.TxOut)) {
+			return fmt.Errorf("funding transaction %s has no output %d", f.TxID, f.Vout)
+		}
+		out := tx.TxOut[f.Vout]
+		if out.Value != f.Value {
+			return fmt.Errorf("funding output %s:%d holds %d sat on the chain, not the %d sat "+
+				"this record says", f.TxID, f.Vout, out.Value, f.Value)
+		}
+		// Recorded only once it is known to be this contract's. A script that
+		// was read and does not match must not land on the record: "bound"
+		// is what releases the card's actions, and a mismatch is the opposite
+		// of bound.
+		got := hex.EncodeToString(out.PkScript)
+		want, err := contractPkScript(sw.Contract, params)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(got, hex.EncodeToString(want)) {
+			if !loggedOnce(sw, fundingMismatchNote) {
+				sw.log("%s", fundingMismatchNote)
+			}
+			return fmt.Errorf("%w: the funding output %s:%d pays script %s, which is not this "+
+				"swap's contract %s. The contract on the record is not the one that was funded",
+				errFundingMismatch, f.TxID, f.Vout, got, sw.ContractAddr)
+		}
+		f.PkScriptHex = got
+	}
+	bound, err := f.bindsTo(sw.Contract, params)
+	if err != nil {
+		return err
+	}
+	if !bound {
+		return fmt.Errorf("the funding output %s:%d pays script %s, which is not this swap's "+
+			"contract %s. The contract on the record is not the one that was funded",
+			f.TxID, f.Vout, f.PkScriptHex, sw.ContractAddr)
+	}
+	return nil
+}
+
+// errFundingMismatch marks a binding that failed because the chain answered
+// and disagreed, as opposed to one that could not be read.
+var errFundingMismatch = errors.New("funding pays another script")
+
+// fundingMismatchNote is logged once when the chain says the funding output
+// pays something other than this swap's contract: the record and the chain
+// disagree about what was funded, and nothing is offered against it.
+const fundingMismatchNote = "the funding output pays a script that is NOT this swap's contract. The " +
+	"contract on this record is not the one that was funded; nothing is offered against this " +
+	"funding. If the contract was replaced, restore the one that was funded from a recovery file"
+
 // Redeem claims a contract by revealing the secret, then broadcasts it.
 func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error) {
 	backend := m.Chain
@@ -995,6 +1187,12 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	if err != nil {
 		return nil, err
 	}
+	// The output being spent must be an output of THIS contract, as the chain
+	// says, not as the record does. A chain that cannot say is a refusal: a
+	// redeem is the transaction that publishes the secret.
+	if err := bindFunding(ctx, backend, sw, params); err != nil {
+		return nil, fmt.Errorf("not redeeming: %w", err)
+	}
 	feeRate, err := backend.FeeRate(ctx, 3)
 	if err != nil {
 		feeRate = 2.0
@@ -1007,19 +1205,19 @@ func (m *Manager) Redeem(ctx context.Context, id, destAddr string) (*Swap, error
 	if err != nil {
 		return nil, fmt.Errorf("broadcast redeem: %w", err)
 	}
-	sw.RedeemTx = spend
-	sw.State = StateRedeemed
-	// Record the address a keyless old backup was just given, so the swap names
-	// what it actually paid. payoutAddress has already refused anything that
-	// disagrees with an address the record held, so this only ever fills a gap.
-	if sw.DestAddr == "" {
-		sw.DestAddr = destAddr
-	}
-	sw.log("redeemed to %s in %s (%d sat after a %d sat fee)", destAddr, txid, spend.Value, spend.Fee)
-	if err := m.Store.Save(sw); err != nil {
-		return nil, err
-	}
-	return sw, nil
+	// From here the chain has the transaction, whatever the store says.
+	return m.saveOutcome(sw, txid, func(s *Swap) {
+		s.RedeemTx = spend
+		s.State = StateRedeemed
+		// Record the address a keyless old backup was just given, so the swap
+		// names what it actually paid. payoutAddress has already refused
+		// anything that disagrees with an address the record held, so this
+		// only ever fills a gap.
+		if s.DestAddr == "" {
+			s.DestAddr = destAddr
+		}
+		s.log("redeemed to %s in %s (%d sat after a %d sat fee)", destAddr, txid, spend.Value, spend.Fee)
+	})
 }
 
 // Refund broadcasts the timelocked reclaim. It rebuilds the transaction at
@@ -1046,15 +1244,21 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 	if err != nil {
 		return nil, err
 	}
+	params, err := sw.Params()
+	if err != nil {
+		return nil, err
+	}
+	// Bound before anything is broadcast -- the pre-signed refund included,
+	// because it may have been signed by a release that did not bind, over a
+	// contract a session has since replaced.
+	if err := bindFunding(ctx, backend, sw, params); err != nil {
+		return nil, fmt.Errorf("not refunding: %w", err)
+	}
 	// The pre-signed refund, when there is one, was built to this same address
 	// the moment funding appeared — the only address it could have been built
 	// to, now that one cannot be swapped out from under it.
 	spend := sw.RefundTx
 	if spend == nil {
-		params, err := sw.Params()
-		if err != nil {
-			return nil, err
-		}
 		feeRate, err := backend.FeeRate(ctx, 6)
 		if err != nil {
 			feeRate = 2.0
@@ -1075,16 +1279,14 @@ func (m *Manager) Refund(ctx context.Context, id, destAddr string) (*Swap, error
 			"passed on your clock but not yet in the chain's median time past, which trails "+
 			"real time by about an hour -- retry shortly)", err)
 	}
-	sw.RefundTx = spend
-	sw.State = StateRefunded
-	if sw.DestAddr == "" && destAddr != "" {
-		sw.DestAddr = destAddr
-	}
-	sw.log("refunded in %s (%d sat after a %d sat fee)", txid, spend.Value, spend.Fee)
-	if err := m.Store.Save(sw); err != nil {
-		return nil, err
-	}
-	return sw, nil
+	return m.saveOutcome(sw, txid, func(s *Swap) {
+		s.RefundTx = spend
+		s.State = StateRefunded
+		if s.DestAddr == "" && destAddr != "" {
+			s.DestAddr = destAddr
+		}
+		s.log("refunded in %s (%d sat after a %d sat fee)", txid, spend.Value, spend.Fee)
+	})
 }
 
 // zenonVerifyParams builds the expectations this swap has of its Zenon HTLC.

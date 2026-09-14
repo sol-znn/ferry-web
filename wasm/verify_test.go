@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -471,9 +472,9 @@ func TestIncomingHtlcNeedsARecipientAndAnAmount(t *testing.T) {
 	}
 
 	// With the amount blank, or zero, the same HTLC is refused for that.
-	for _, amount := range []string{"", "0", "0.00"} {
+	for i, amount := range []string{"", "0", "0.00"} {
 		noAmount := &Swap{
-			ID: "abcdef0123456711", Network: "regtest", Role: RoleInitiator, Leg: LegSend,
+			ID: fmt.Sprintf("abcdef012345671%d", i), Network: "regtest", Role: RoleInitiator, Leg: LegSend,
 			State: StateFunded, SecretHash: hash, AmountSats: 400_000,
 			LockTime: time.Now().Add(48 * time.Hour).Unix(),
 			Zenon:    ZenonLeg{SelfAddress: f03Mine, PeerAddress: f03Attacker, AmountDisplay: amount},
