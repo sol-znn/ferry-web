@@ -1,0 +1,26 @@
+{
+  "bundleVersion": 1,
+  "title": "Ferry security audit — sanitized developer handoff",
+  "auditDate": "2026-09-11",
+  "revision": "be879e1bd61a9922ee58e16d32095bafa43bdf6e",
+  "repository": "https://github.com/sol-znn/ferry-web",
+  "reportableFindings": 7,
+  "severityCounts": {
+    "high": 4,
+    "medium": 2,
+    "low": 1
+  },
+  "sourceFilesReviewed": 152,
+  "assessmentCoverage": "partial",
+  "originalSealedArtifactsIncluded": false,
+  "applicationModified": false,
+  "sanitization": "Personal identifiers and machine-local source paths removed from all included text and metadata; source links target the audited revision.",
+  "verification": "shasum -a 256 -c SHA256SUMS.txt",
+  "omissions": [
+    "drafts",
+    "checkpoints",
+    "operating-system metadata",
+    "repository files",
+    "unexecuted experimental tests"
+  ]
+}

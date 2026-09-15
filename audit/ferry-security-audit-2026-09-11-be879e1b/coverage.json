@@ -1,0 +1,1115 @@
+{
+  "completeness": "partial",
+  "coverageBasis": "Deduplicated union of fully reviewed source paths from the independent baseline, focused engine, board/session, tooling/docs and test-source reviews, plus parent review, intersected with the current 152-file git inventory. No source paths remain. All requested source files were reviewed; the overall assessment remains partial because external-wallet publication behavior for the deferred Unlock candidate is unresolved.",
+  "deferred": [
+    {
+      "candidate": {
+        "evidence": "planUnlock trusts cached Zenon.Verified without refetch/expiry validation; Manager.Redeem accepts cached Funding confirmation and expired contracts. planCreate lacks funding/confirmation check. Source follow-up underway.",
+        "source": "focused investigator"
+      },
+      "candidateId": "stale-zenon-unlock",
+      "disposition": "deferred",
+      "evidence": [
+        "wasm/walletblock.go:356-369",
+        "wasm/manager.go:1155",
+        "ui/src/core/composables/useAutoRefresh.ts:83-85"
+      ],
+      "id": "stale-zenon-unlock",
+      "nextStep": "With the supported wallet and local test chain, inspect whether an expired/missing-HTLC Unlock becomes externally visible before rejection; retain a freshness gate regardless.",
+      "reason": "Source confirms stale verification can permit construction of secret-bearing Unlock after expiry or entry disappearance. External Syrius/go-zenon rejection and publication timing is not in the repository, so disclosure and funds loss are not established."
+    },
+    {
+      "id": "raw-baseline-result",
+      "payload": {
+        "findings": [
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin participant trading with a Zenon initiator who has enabled Auto Mode.",
+            "confidence": "high",
+            "counterevidence": [
+              "The UI exposes fundingShort and displays a destructive badge.",
+              "Refresh keeps searching for a larger output while the contract is underfunded.",
+              "Auto Mode requires a confirmed funding output, and BuildRedeem rejects amounts too small to spend. Neither control requires the agreed amount."
+            ],
+            "exact_evidence": [
+              "Refresh sets sw.Funding from best.Value and StateFunded before checking the amount.",
+              "if sw.Funding.Value < sw.AmountSats { sw.log(\"WARNING: contract holds %d sat but %d sat was agreed; do not proceed until this is resolved\", ...) }",
+              "if (canRedeem.value && destForSpend.value && props.swap.funding?.confirmed) { ... api.redeem(...) }",
+              "Redeem passes *sw.Funding to BuildRedeem and broadcasts spend.RawHex without comparing Funding.Value with AmountSats."
+            ],
+            "impact": "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment.",
+            "invariant": "The initiator must not release the preimage until the participant has committed the agreed Bitcoin amount.",
+            "locations": [
+              {
+                "file": "wasm/manager.go",
+                "lines": "533-574"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "936-974"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "327-332"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "737-740"
+              }
+            ],
+            "remediation": "Enforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.",
+            "rule": "Enforce the agreed consideration before revealing an atomic-swap secret",
+            "severity": "high",
+            "source_to_sink": "The attacker funds the correct Bitcoin HTLC with a confirmed output substantially below AmountSats but large enough to cover its spend fee and dust limit. Refresh adopts that output as Funding and merely logs the shortfall. SwapCard.canRedeem checks for funding and a secret, and autoStep only adds a confirmation check. Manager.Redeem also omits the agreed-amount comparison, so Auto Mode signs and broadcasts a redeem that publishes the initiator's secret. The attacker can then unlock the full Zenon HTLC.",
+            "title": "Auto Mode reveals the swap secret for an underfunded Bitcoin payment"
+          },
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin initiator who controls the funding transaction and its replacement.",
+            "confidence": "high",
+            "counterevidence": [
+              "The wallet still requests the user's signature.",
+              "The funding depth badge identifies unconfirmed payments.",
+              "Auto Bitcoin redemption separately requires confirmation and documents the same double-spend attack; that protection is absent from Zenon creation."
+            ],
+            "exact_evidence": [
+              "The funding gate's comment states that confirmed: false means a mempool payment and that the panel opens 'not once it is buried'.",
+              "zenonLegPossible is !props.swap.btcLegIsInitiators || Boolean(props.swap.funding) || Boolean(props.swap.zenon?.htlcId).",
+              "ZenonWallet receives :auto=\"autoOn\" and autoRun calls prepare(), then sign().",
+              "planCreate requires len(sw.Contract) != 0 but contains no Funding or confirmation validation."
+            ],
+            "impact": "The attacker keeps its Bitcoin and collects the victim's Zenon payment.",
+            "invariant": "The participant must not commit its Zenon payment while the initiating Bitcoin payment can be withdrawn by a routine double-spend.",
+            "locations": [
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "225-246"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "1295-1300"
+              },
+              {
+                "file": "ui/src/components/ZenonWallet.vue",
+                "lines": "251-266"
+              },
+              {
+                "file": "wasm/walletblock.go",
+                "lines": "220-335"
+              }
+            ],
+            "remediation": "When Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.",
+            "rule": "Require sufficiently confirmed initiating funding before committing the participant leg",
+            "severity": "high",
+            "source_to_sink": "Refresh exposes an unconfirmed Bitcoin output as Funding. SwapCard opens the Zenon controls whenever Funding exists, expressly including a mempool payment. planCreate checks the audited contract and expiry ordering but never checks Funding or its confirmation state. ZenonWallet Auto Mode prepares the create and requests the user's ordinary wallet signature. After the victim locks Zenon, the attacker replaces the Bitcoin funding transaction and uses the secret it generated to unlock the victim's Zenon HTLC.",
+            "title": "The Zenon participant locks funds against replaceable Bitcoin funding"
+          },
+          {
+            "CWE": "CWE-754",
+            "attacker": "A malicious Zenon participant trading with a Bitcoin initiator whose swap was created without a Zenon self address.",
+            "confidence": "high",
+            "counterevidence": [
+              "A supplied self address is validated and a mismatching HTLC recipient is rejected.",
+              "A wallet connected before form creation can prefill the field.",
+              "The attack requires the supported blank-address creation path; it does not bypass a correctly pinned recipient."
+            ],
+            "exact_evidence": [
+              "Create documents the Zenon fields as optional and validates an address only when one was supplied.",
+              "want.ExpectRecipient = sw.Zenon.SelfAddress",
+              "if want.ExpectRecipient != \"\" && !strings.EqualFold(info.HashLocked, want.ExpectRecipient) { ... }",
+              "case \"unlock\": ... if self == \"\" || strings.EqualFold(self, out.Address) { return }",
+              "planUnlock calls znn.PackUnlock(id, sw.Secret); its summary substitutes 'the address in the entry' when payee is blank."
+            ],
+            "impact": "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin.",
+            "invariant": "A verified incoming Zenon HTLC must pay the victim's agreed address before the victim reveals the Bitcoin preimage.",
+            "locations": [
+              {
+                "file": "wasm/manager.go",
+                "lines": "220-236"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "1077-1082"
+              },
+              {
+                "file": "wasm/znn/client.go",
+                "lines": "450-453"
+              },
+              {
+                "file": "wasm/walletsync.go",
+                "lines": "288-295"
+              },
+              {
+                "file": "wasm/walletblock.go",
+                "lines": "356-383"
+              },
+              {
+                "file": "ui/src/pages/ActivePage.vue",
+                "lines": "429-453"
+              }
+            ],
+            "remediation": "Require a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.",
+            "rule": "Fail closed when the recipient expectation is absent",
+            "severity": "high",
+            "source_to_sink": "Create permits a blank ZenonSelfAddress. For an incoming Zenon leg, zenonVerifyParams derives ExpectRecipient from that blank value. Client.Verify skips the recipient comparison when the expectation is empty, so an attacker-created HTLC with the correct token, amount, hash and expiry but an attacker-controlled hashLocked address verifies successfully. Connecting a wallet later does not repair this: checkWalletAgainstSwap returns immediately for unlock when self is blank. planUnlock then encodes the secret and requests publication, which pays the HTLC's attacker-controlled recipient.",
+            "title": "Optional Zenon payout identity allows verification of an HTLC paying the attacker"
+          },
+          {
+            "CWE": "CWE-20",
+            "attacker": "A malicious Bitcoin initiator supplying the redeem script that a Zenon participant audits.",
+            "confidence": "high",
+            "counterevidence": [
+              "Malformed, truncated, extended and wrong-sized templates are rejected.",
+              "Contracts generated by BuildContract use canonical ScriptBuilder encodings.",
+              "Bitcoin consensus may permit a specially mined nonstandard redeem, but Ferry refuses to construct it and normal relay policy is the operational path."
+            ],
+            "exact_evidence": [
+              "ParseContract retains both op and data for each token but checks template opcodes only at fixed positions.",
+              "secretHash := tokens[5].data; if len(secretHash) != sha256.Size { ... }",
+              "The dynamic hash and public-key-hash positions are accepted on data length without requiring OP_DATA_32 or OP_DATA_20.",
+              "txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags, ...)",
+              "engine.Execute() errors are returned before broadcasting."
+            ],
+            "impact": "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin.",
+            "invariant": "An accepted contract must permit the victim to execute the redeem branch under the transaction policy Ferry itself enforces.",
+            "locations": [
+              {
+                "file": "wasm/htlc.go",
+                "lines": "145-205"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "403-445"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "193-204"
+              }
+            ],
+            "remediation": "Rebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.",
+            "rule": "Validate the exact executable contract accepted by the spending policy",
+            "severity": "high",
+            "source_to_sink": "ParseContract validates fixed opcode positions and the lengths of pushed data, but not the push opcodes at the dynamic positions. The attacker can replace the direct 32-byte secret-hash push in the OP_IF branch with OP_PUSHDATA1 followed by length 32 and the same hash. The parser still returns the expected hash, recipient and locktime, so AuditContract accepts it and the victim can lock Zenon. After the attacker unlocks Zenon, the victim's BuildRedeem fails local execution under StandardVerifyFlags because that branch executes a nonminimal data push. The attacker's refund branch skips the offending OP_IF push.",
+            "title": "Contract audit accepts nonminimal pushes that prevent the victim's redeem branch"
+          },
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin initiator connected to the victim's swap session.",
+            "confidence": "high",
+            "counterevidence": [
+              "The replacement must preserve the victim's redeem key and secret hash and pass timing checks.",
+              "A previously saved recovery file containing contract A can enable manual recovery.",
+              "The attacker does not acquire the victim's private key; exploitation relies on blocking the normal claim path until the refund deadline."
+            ],
+            "exact_evidence": [
+              "case 'contract': await applyValue(..., () => api.audit(swapId.value, msg.contractHex ?? ''))",
+              "sw.Contract = contract; sw.ContractAddr = addr.String(); sw.LockTime = details.LockTime; sw.CounterpartyPKH = details.PkhRefund",
+              "AuditContract has no existing-contract equality check or funding/Zenon-commitment mutation guard.",
+              "contractPkScript is derived from the current contract while the input uses the retained funding.TxID and funding.Vout."
+            ],
+            "impact": "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline.",
+            "invariant": "Once funds are committed, peer messages must not replace the script associated with the recorded funding outpoint.",
+            "locations": [
+              {
+                "file": "ui/src/core/composables/useSession.ts",
+                "lines": "624-627"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "388-459"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "438-441"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "145-163"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "196-198"
+              }
+            ],
+            "remediation": "Treat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.",
+            "rule": "Freeze committed contract identity and bind funding to the actual previous output",
+            "severity": "high",
+            "source_to_sink": "Incoming session contract messages automatically call api.audit. AuditContract accepts a new script whenever its redeem key, secret hash and timing checks pass, including after funding and Zenon commitment. It overwrites Contract, ContractAddr and CounterpartyPKH without clearing or rebinding Funding. The attacker can fund contract A, wait for the victim to lock Zenon, then send contract B with the same hash, victim redeem key and locktime but a different refund key. After the attacker unlocks Zenon, the victim builds a B-script spend of A's funding output. Local validation constructs its supposed previous-output script from B rather than reading A's actual script, so the network rejects the transaction. The attacker can later refund A.",
+            "title": "A session peer can replace an already-funded contract while preserving its funding record"
+          },
+          {
+            "CWE": "CWE-78",
+            "attacker": "A counterparty who supplies an encoded offer to a victim using Ferry's supported znn-cli workflow.",
+            "confidence": "high",
+            "counterevidence": [
+              "The payload appears as visible amount text.",
+              "CLI commands are behind an opt-in toggle and require the user to execute them.",
+              "The Syrius create path later performs decimal conversion and rejects a malformed amount, but command generation does not pass through that validator."
+            ],
+            "exact_evidence": [
+              "form.value.zenonAmount = d.decoded.zenonAmt ?? ''",
+              "AmountDisplay: strings.TrimSpace(p.ZenonAmount)",
+              "const amount = sw.zenon?.amountDisplay || '<amount>'",
+              "`znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1`",
+              "<CopyButton :value=\"commands\" ... />"
+            ],
+            "impact": "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets.",
+            "invariant": "Offer data copied into a generated command must remain a literal argument rather than executable shell syntax.",
+            "locations": [
+              {
+                "file": "wasm/swap.go",
+                "lines": "DecodeOffer"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "270-274"
+              },
+              {
+                "file": "ui/src/pages/ActivePage.vue",
+                "lines": "540-543"
+              },
+              {
+                "file": "ui/src/core/zenon-commands.ts",
+                "lines": "60-72"
+              },
+              {
+                "file": "ui/src/core/zenon-commands.ts",
+                "lines": "94-98"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "1316-1332"
+              }
+            ],
+            "remediation": "Validate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.",
+            "rule": "Validate numeric offer fields and quote shell arguments",
+            "severity": "high",
+            "source_to_sink": "DecodeOffer does not validate ZenonAmt as a decimal. ActivePage copies it into zenonAmount, and Create stores the trimmed string without numeric validation. Offer.CheckCreate compares the agreed text but is not a numeric validator. znnCommands interpolates amountDisplay directly into shell input and SwapCard supplies a CopyButton for that command. An offer amount such as 1$(id) reaches the generated command unchanged; when the victim fills the normal keystore placeholders and runs it, the shell executes the substitution before znn-cli can reject the amount.",
+            "title": "Counterparty-controlled amounts become executable shell syntax in generated CLI commands"
+          }
+        ],
+        "fully_reviewed_files": [
+          ".github/workflows/deploy.yml",
+          "docs/SECURITY.md",
+          "scripts/regtest-esplora.mjs",
+          "ui/index.html",
+          "ui/package.json",
+          "ui/public/vercel.json",
+          "ui/src/core/composables/useAutoMode.ts",
+          "ui/src/core/composables/useAutoRefresh.ts",
+          "ui/src/core/composables/useSession.ts",
+          "ui/src/core/handoffs.ts",
+          "ui/src/core/nostr.ts",
+          "ui/src/core/unisat.ts",
+          "ui/src/core/zenon-commands.ts",
+          "ui/src/core/zenon-wallet.ts",
+          "wasm/api.go",
+          "wasm/board.go",
+          "wasm/board_api.go",
+          "wasm/boardpost.go",
+          "wasm/boardstore.go",
+          "wasm/chain/backend.go",
+          "wasm/chain/esplora.go",
+          "wasm/chainid.go",
+          "wasm/env.go",
+          "wasm/estimate.go",
+          "wasm/go.mod",
+          "wasm/htlc.go",
+          "wasm/htlc_test.go",
+          "wasm/httpx/httpx.go",
+          "wasm/httpx/httpx_js.go",
+          "wasm/httpx/httpx_native.go",
+          "wasm/keys.go",
+          "wasm/main_js.go",
+          "wasm/manager.go",
+          "wasm/offerterms.go",
+          "wasm/recover.go",
+          "wasm/session.go",
+          "wasm/session_api.go",
+          "wasm/storage_js.go",
+          "wasm/store.go",
+          "wasm/swap.go",
+          "wasm/txbuild.go",
+          "wasm/walletblock.go",
+          "wasm/walletsync.go",
+          "wasm/znn/address.go",
+          "wasm/znn/client.go",
+          "wasm/znn/htlcabi.go",
+          "wasm/znn/ledger.go",
+          "wasm/znn/ws_js.go",
+          "wasm/znn/ws_native.go"
+        ],
+        "resolved_questions": [
+          {
+            "resolution": "No inherited or source-directory SECURITY.md policy was found. docs/SECURITY.md was treated as security-model documentation, including its explicit interest in counterparty theft and falsely passed checks.",
+            "topic": "Security policy"
+          },
+          {
+            "resolution": "Potential additional secret-disclosure path: planUnlock in wasm/walletblock.go:356-369 relies on persistent Zenon.Verified and does not reread the entry or validate current expiry. Verified entries are not periodically reverified, and ZenonWallet.sign publishes a previously prepared block after only a wallet-sync check. An expired or reclaimed HTLC can therefore lead Ferry to prepare an unlock containing the initiator's secret. This was not promoted to a finding because the authorized offline repository does not establish whether the external wallet/node rejects such a call before the secret becomes observable or publishes a failed contract call. Protocol evidence is needed to resolve that last step.",
+            "topic": "Expired cached Zenon verification"
+          },
+          {
+            "resolution": "The implementation validates contract shape, hashlocks, redeem identities, timestamp locktimes and cross-leg expiry ordering; checks Zenon token identity and amount conversion failures; verifies Nostr signatures and authenticated session ciphertext; pins Bitcoin payout addresses; and checks wallet account/chain consistency. These controls do not address the reported state and validation gaps.",
+            "topic": "Existing controls"
+          },
+          {
+            "resolution": "Unencrypted localStorage, shared-origin exposure, deployment trust and reliance on chosen chain backends are explicitly documented architectural limitations. No separate exploitable XSS or origin-boundary bypass was established in the reviewed source, so these were not reported as new findings.",
+            "topic": "Browser storage and node trust"
+          },
+          {
+            "resolution": "This was offline static analysis of current source only. No application code, exploit, transaction, test or external service was executed. Dependency advisory status and external wallet/protocol behavior were not independently verified. fully_reviewed_files lists only files read completely; other source was searched or partially inspected.",
+            "topic": "Audit limitations"
+          }
+        ]
+      },
+      "reason": "Original worker discovery payload preserved before parent validation and consolidation.",
+      "status": "unvalidated-worker-payload",
+      "worker": "baseline"
+    },
+    {
+      "id": "raw-engine-result",
+      "payload": {
+        "findings": [
+          {
+            "attacker": "A malicious participant supplying Bitcoin to a victim who initiated the swap by locking ZNN.",
+            "confidence": "high",
+            "counterevidence": "pickFunding prefers a covering output when available, but deliberately adopts the largest underpayment when none covers the amount. The warning does not gate signing. The parent verified SwapCard.canRedeem checks only leg, funding, secret and state; autoStep adds confirmation but no amount check. Manual redemption also lacks a confirmation guard. Redeem only logs a warning after expiry, creating an additional unsafe secret-disclosure case.",
+            "cwe": "CWE-841",
+            "impact": "Loss of the difference between the agreed exchange value and the attacker's arbitrarily small, spendable Bitcoin payment. The normal automatic redemption path is reachable with a confirmed underpayment according to the parent UI review.",
+            "invariant": "The initiator must disclose the secret only after the counterparty's Bitcoin output satisfies the agreed amount and confirmation requirements.",
+            "locations": [
+              {
+                "end_line": 556,
+                "path": "wasm/manager.go",
+                "snippet": "best := pickFunding(utxos, sw.AmountSats)\n...\nsw.State = StateFunded\n...\nsw.Funding = &FundingOutput{ ... Value: best.Value }",
+                "start_line": 538
+              },
+              {
+                "end_line": 573,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Funding.Value < sw.AmountSats {\n    sw.log(\"WARNING: contract holds %d sat but %d sat was agreed; do not proceed until this is resolved\", sw.Funding.Value, sw.AmountSats)\n}",
+                "start_line": 571
+              },
+              {
+                "end_line": 972,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Funding == nil { ... }\nif len(sw.Secret) == 0 { ... }\n...\nspend, err := BuildRedeem(sw.Contract, *sw.Funding, sw.Key, sw.Secret, destAddr, feeRate, params)\n...\ntxid, err := backend.Broadcast(ctx, spend.RawHex)",
+                "start_line": 945
+              }
+            ],
+            "remediation": "Add a central role-aware disclosure gate before BuildRedeem/Broadcast that requires freshly validated funding of at least AmountSats, adequate confirmations, an unspent matching outpoint, and sufficient remaining claim time whenever this is the initiator's first disclosure. Keep participant recovery paths possible when the secret is already public.",
+            "rule": "Validate counterparty funding immediately before secret disclosure",
+            "severity": "high",
+            "source_to_sink": "The counterparty pays a spendable amount smaller than AmountSats to the audited Bitcoin contract. Refresh adopts this output and sets StateFunded, merely logging the shortfall. Manager.Redeem checks only that Funding exists and the secret is present, then signs and broadcasts a transaction containing the secret. BuildRedeem verifies script satisfaction but knows no agreed amount. The attacker reads the preimage and claims all of the victim's ZNN while paying only the smaller Bitcoin amount.",
+            "title": "Require the full Bitcoin amount before revealing the initiator's preimage"
+          },
+          {
+            "attacker": "A malicious Bitcoin initiator who controls the inputs of the funding transaction and already knows the swap secret.",
+            "confidence": "high",
+            "counterevidence": "Wallet synchronization checks the Zenon account and whether the wallet and page see the same Zenon chain. It does not check Bitcoin funding. Timelock-order checks are present but cannot prevent a funding double-spend. The parent verified SwapCard.zenonLegPossible permits the unconfirmed-funding state and ZenonWallet adds no funding gate.",
+            "cwe": "CWE-841",
+            "impact": "The participant loses the ZNN leg without receiving the promised Bitcoin.",
+            "invariant": "The participant must establish durable, sufficient funding on the initiator's leg before committing their own funds.",
+            "locations": [
+              {
+                "end_line": 239,
+                "path": "wasm/walletblock.go",
+                "snippet": "if !sw.ZenonHtlcIsOurs() { ... }\nif sw.Zenon.HtlcID != \"\" { ... }\nif len(sw.Contract) == 0 { ... }",
+                "start_line": 224
+              },
+              {
+                "end_line": 324,
+                "path": "wasm/walletblock.go",
+                "snippet": "data, err := znn.PackCreate(hashLocked, expiration, znn.HashTypeSHA256, SecretSize, sw.SecretHash)\n...\nb.Amount = amount.String()\nb.TokenStandard = token\nb.Data = base64.StdEncoding.EncodeToString(data)",
+                "start_line": 305
+              },
+              {
+                "end_line": 560,
+                "path": "wasm/manager.go",
+                "snippet": "sw.Funding = &FundingOutput{\n    TxID: best.TxID, Vout: best.Vout, Value: best.Value,\n    Confirmed: best.Status.Confirmed,\n    BlockHeight: best.Status.BlockHeight,\n}",
+                "start_line": 552
+              }
+            ],
+            "remediation": "For RoleParticipant/LegReceive, refetch and validate the exact Bitcoin funding output, agreed amount and required confirmation depth before building htlc.Create and again before dispatch. Do not apply this prerequisite to the ZNN initiator, whose protocol role requires funding first.",
+            "rule": "Confirm the initiator's funding before funding the participant's leg",
+            "severity": "high",
+            "source_to_sink": "The attacker supplies a valid Bitcoin contract and broadcasts its funding transaction. Refresh records the unconfirmed output. planCreate checks contract presence and timelock ordering but never checks Funding, AmountSats or confirmations. The UI permits participant Zenon creation once the Bitcoin funding output is visible. Once the victim's ZNN HTLC is published, the attacker unlocks it using their already-known secret and replaces or double-spends the still-unconfirmed Bitcoin funding.",
+            "title": "Do not lock participant ZNN against unconfirmed Bitcoin funding"
+          },
+          {
+            "attacker": "A malicious Zenon counterparty providing an HTLC ID to a Bitcoin sender whose swap was created without their own Zenon recipient address or an expected Zenon amount.",
+            "confidence": "high",
+            "counterevidence": "Nonempty malformed addresses are rejected, wrong nonempty expected recipients are rejected, and metadata lookup failures for a nonempty amount fail closed. Those protections do not cover omitted expectations. TestCreateValidatesZenonFields explicitly asserts that blank addresses are accepted. The parent verified the UI requires the Bitcoin destination but leaves Zenon self and amount optional.",
+            "cwe": "CWE-20",
+            "impact": "A counterparty can take the victim's Bitcoin without paying the victim any ZNN. Missing amount expectations independently permit underpayment to be labeled verified.",
+            "invariant": "Verification authorizing preimage disclosure must establish that the agreed token and amount pay the victim.",
+            "locations": [
+              {
+                "end_line": 1082,
+                "path": "wasm/manager.go",
+                "snippet": "want.ExpectRecipient = sw.Zenon.SelfAddress\nwant.ExpectSender = sw.Zenon.PeerAddress",
+                "start_line": 1080
+              },
+              {
+                "end_line": 1131,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Zenon.AmountDisplay != \"\" {\n    ...\n    want.MinAmount = amt\n}",
+                "start_line": 1120
+              },
+              {
+                "end_line": 470,
+                "path": "wasm/znn/client.go",
+                "snippet": "if want.ExpectRecipient != \"\" && !strings.EqualFold(info.HashLocked, want.ExpectRecipient) { ... }\n...\n} else if want.MinAmount != nil {\n    ...\n    } else if amt.Cmp(want.MinAmount) < 0 { ... }\n}",
+                "start_line": 450
+              },
+              {
+                "end_line": 1236,
+                "path": "wasm/manager.go",
+                "snippet": "sw.Zenon.Verified = true\nsw.Zenon.VerifyError = \"\"\n...\nsw.log(\"Zenon HTLC %s verified: hashlock, parties, amount and expiry all match ...\", ...)",
+                "start_line": 1233
+              },
+              {
+                "end_line": 294,
+                "path": "wasm/walletsync.go",
+                "snippet": "if self == \"\" || strings.EqualFold(self, out.Address) {\n    return\n}",
+                "start_line": 293
+              },
+              {
+                "end_line": 380,
+                "path": "wasm/walletblock.go",
+                "snippet": "if !sw.Zenon.Verified { ... }\n...\ndata, err := znn.PackUnlock(id, sw.Secret)\n...\nplan.Block.Data = base64.StdEncoding.EncodeToString(data)",
+                "start_line": 360
+              }
+            ],
+            "remediation": "Allow incomplete drafts if needed, but refuse a verified verdict and any funding or disclosure action until the mandatory recipient and positive expected amount are established. Verify the on-chain recipient against the user's explicitly selected receiving account; do not adopt the peer-controlled observed address as the expectation.",
+            "rule": "Do not treat omitted payment expectations as successful verification",
+            "severity": "high",
+            "source_to_sink": "Create accepts blank Zenon addresses and amount. For the BTC sender, zenonVerifyParams assigns the blank SelfAddress to ExpectRecipient; zenonExpectations leaves MinAmount nil when AmountDisplay is blank. Client.Verify skips those comparisons. VerifyZenon nevertheless persists Verified=true and says that parties and amount match. runWalletSync also permits an unlock when self is blank. planUnlock then encodes the secret into Unlock calldata. An HTLC naming the attacker's own address passes the omitted recipient check, so the victim's unlock returns the ZNN to the attacker and reveals the preimage needed to take the victim's Bitcoin.",
+            "title": "Refuse verified Zenon status when the expected recipient or amount is missing"
+          },
+          {
+            "attacker": "A malicious participant whose shorter Zenon HTLC was previously verified and who reclaims it after expiry while the victim still has a live, longer Bitcoin HTLC.",
+            "confidence": "medium",
+            "counterevidence": "Client.Verify checks current expiry when actually called. handleWalletBlock fetches current momentum and performs wallet synchronization, but neither is passed into a fresh HTLC verification. The parent verified useAutoRefresh only retries unverified pending HTLCs; it does not refresh successful verdicts. External wallet rejection may prevent public disclosure and must be checked before promoting the theft impact as fully validated.",
+            "cwe": "CWE-367",
+            "impact": "If the wallet/network publishes the send or otherwise exposes its calldata before embedded execution rejects it, the attacker learns the preimage and claims the live Bitcoin leg after reclaiming ZNN. The repository establishes unsafe calldata construction but does not contain the external wallet/contract implementation needed to prove that final publication step.",
+            "invariant": "A past verification must not authorize first disclosure after the counterparty's payment is no longer claimable.",
+            "locations": [
+              {
+                "end_line": 208,
+                "path": "wasm/walletblock.go",
+                "snippet": "mom, err := mgr.Znn.FrontierMomentum(ctx)\n...\ncase \"unlock\":\n    err = planUnlock(ctx, mgr, sw, from, plan)",
+                "start_line": 191
+              },
+              {
+                "end_line": 369,
+                "path": "wasm/walletblock.go",
+                "snippet": "if !sw.Zenon.Verified { ... }\n...\ndata, err := znn.PackUnlock(id, sw.Secret)",
+                "start_line": 360
+              },
+              {
+                "end_line": 1234,
+                "path": "wasm/manager.go",
+                "snippet": "sw.Zenon.Verified = true\nsw.Zenon.VerifyError = \"\"",
+                "start_line": 1233
+              }
+            ],
+            "remediation": "Fetch and verify the exact HTLC against current chain time and complete swap expectations immediately before building unlock calldata. Clear or mark stale the cached verdict when the entry is absent, unreadable or expired; require enough remaining time for safe confirmation.",
+            "rule": "Invalidate stale authorization before preimage disclosure",
+            "severity": "high",
+            "source_to_sink": "VerifyZenon stores a timeless Verified boolean. planUnlock only checks this cached boolean before encoding the secret. It does not fetch the HTLC or compare its expiry against the freshly read momentum. Ordinary Refresh does not revalidate Zenon, and a failed GetHtlcByID verification path returns without clearing the old verdict. A victim returning after expiry can therefore construct and dispatch an unlock containing their previously private secret against a missing or expired HTLC.",
+            "title": "Revalidate the Zenon HTLC before constructing secret-bearing unlock calldata",
+            "validation_status": "Engine defect established; end-to-end theft requires confirming wallet/go-zenon publication behavior for expired or already-reclaimed unlocks."
+          }
+        ],
+        "fully_reviewed_files": [
+          "wasm/manager.go",
+          "wasm/walletblock.go",
+          "wasm/walletsync.go",
+          "wasm/swap.go",
+          "wasm/offerterms.go",
+          "wasm/htlc.go",
+          "wasm/htlc_test.go",
+          "wasm/txbuild.go",
+          "wasm/chainid.go",
+          "wasm/chain/backend.go",
+          "wasm/chain/esplora.go",
+          "wasm/znn/client.go",
+          "wasm/znn/ledger.go",
+          "wasm/znn/htlcabi.go",
+          "wasm/znn/address.go"
+        ],
+        "resolved_questions": [
+          {
+            "answer": "No demonstrated path: the agreed token defaults to ZNN, Client.Verify compares token standards, and GetToken checks the returned token identity and plausible decimals. Observed token data does not overwrite agreed terms.",
+            "question": "Can counterparty token substitution satisfy a nonempty amount expectation?"
+          },
+          {
+            "answer": "No demonstrated path: manual secret input checks the fixed length and SHA-256 hash; Bitcoin and Zenon extraction match the committed hash. Zenon scanning uses a fixed 32-byte window.",
+            "question": "Can arbitrary preimage data be accepted without matching the swap hash?"
+          },
+          {
+            "answer": "No: full walletsync.go review establishes account, network, momentum-anchor and drift checks, but no Bitcoin funding sufficiency and no live Zenon HTLC verification.",
+            "question": "Do wallet synchronization checks close the funding and disclosure gaps?"
+          },
+          {
+            "answer": "No demonstrated path: payoutAddress refuses changes after the first destination is recorded, and both Redeem and Refund use it.",
+            "question": "Are Bitcoin payout destinations silently replaceable through the normal spend API?"
+          },
+          {
+            "answer": "Yes for fixed opcode positions, field lengths, secret size, numeric minimal encoding and timestamp range. Nonminimal push opcode and post-funding contract mutation leads were handed to the independent baseline worker and are not duplicated here.",
+            "question": "Does contract parsing enforce fixed template, hash length and timestamp bounds?"
+          },
+          {
+            "answer": "No. This packet is source-only. Test files were inspected as corroborating source; tests and the application were not executed.",
+            "question": "Were code execution or live-chain requests used?"
+          }
+        ]
+      },
+      "reason": "Original worker discovery payload preserved before parent validation and consolidation.",
+      "status": "unvalidated-worker-payload",
+      "worker": "focused-engine"
+    }
+  ],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [],
+  "includePaths": [
+    "."
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "repository",
+  "openQuestions": [
+    {
+      "followUpPrompt": "Validate expired and missing HTLC Unlock publication with the supported wallet against local test chains; do not use real funds.",
+      "question": "Does the supported Syrius/go-zenon path publish secret-bearing Unlock calldata when the HTLC is expired or missing, before rejecting the operation?"
+    },
+    {
+      "question": "What confirmation threshold and minimum remaining claim window should the product enforce for its supported transaction sizes?"
+    }
+  ],
+  "scanId": "f57e14cb-0b12-4e58-9724-a1cd8419eb3c",
+  "schemaVersion": "1.0",
+  "sourceFilesReviewed": 152,
+  "sourceFilesTotal": 152,
+  "sourceObservations": [
+    {
+      "details": [
+        {
+          "resolution": "No inherited or source-directory SECURITY.md policy was found. docs/SECURITY.md was treated as security-model documentation, including its explicit interest in counterparty theft and falsely passed checks.",
+          "topic": "Security policy"
+        },
+        {
+          "resolution": "Potential additional secret-disclosure path: planUnlock in wasm/walletblock.go:356-369 relies on persistent Zenon.Verified and does not reread the entry or validate current expiry. Verified entries are not periodically reverified, and ZenonWallet.sign publishes a previously prepared block after only a wallet-sync check. An expired or reclaimed HTLC can therefore lead Ferry to prepare an unlock containing the initiator's secret. This was not promoted to a finding because the authorized offline repository does not establish whether the external wallet/node rejects such a call before the secret becomes observable or publishes a failed contract call. Protocol evidence is needed to resolve that last step.",
+          "topic": "Expired cached Zenon verification"
+        },
+        {
+          "resolution": "The implementation validates contract shape, hashlocks, redeem identities, timestamp locktimes and cross-leg expiry ordering; checks Zenon token identity and amount conversion failures; verifies Nostr signatures and authenticated session ciphertext; pins Bitcoin payout addresses; and checks wallet account/chain consistency. These controls do not address the reported state and validation gaps.",
+          "topic": "Existing controls"
+        },
+        {
+          "resolution": "Unencrypted localStorage, shared-origin exposure, deployment trust and reliance on chosen chain backends are explicitly documented architectural limitations. No separate exploitable XSS or origin-boundary bypass was established in the reviewed source, so these were not reported as new findings.",
+          "topic": "Browser storage and node trust"
+        },
+        {
+          "resolution": "This was offline static analysis of current source only. No application code, exploit, transaction, test or external service was executed. Dependency advisory status and external wallet/protocol behavior were not independently verified. fully_reviewed_files lists only files read completely; other source was searched or partially inspected.",
+          "topic": "Audit limitations"
+        }
+      ],
+      "label": "Baseline dispositions"
+    },
+    {
+      "details": [
+        {
+          "answer": "No demonstrated path: the agreed token defaults to ZNN, Client.Verify compares token standards, and GetToken checks the returned token identity and plausible decimals. Observed token data does not overwrite agreed terms.",
+          "question": "Can counterparty token substitution satisfy a nonempty amount expectation?"
+        },
+        {
+          "answer": "No demonstrated path: manual secret input checks the fixed length and SHA-256 hash; Bitcoin and Zenon extraction match the committed hash. Zenon scanning uses a fixed 32-byte window.",
+          "question": "Can arbitrary preimage data be accepted without matching the swap hash?"
+        },
+        {
+          "answer": "No: full walletsync.go review establishes account, network, momentum-anchor and drift checks, but no Bitcoin funding sufficiency and no live Zenon HTLC verification.",
+          "question": "Do wallet synchronization checks close the funding and disclosure gaps?"
+        },
+        {
+          "answer": "No demonstrated path: payoutAddress refuses changes after the first destination is recorded, and both Redeem and Refund use it.",
+          "question": "Are Bitcoin payout destinations silently replaceable through the normal spend API?"
+        },
+        {
+          "answer": "Yes for fixed opcode positions, field lengths, secret size, numeric minimal encoding and timestamp range. Nonminimal push opcode and post-funding contract mutation leads were handed to the independent baseline worker and are not duplicated here.",
+          "question": "Does contract parsing enforce fixed template, hash length and timestamp bounds?"
+        },
+        {
+          "answer": "No. This packet is source-only. Test files were inspected as corroborating source; tests and the application were not executed.",
+          "question": "Were code execution or live-chain requests used?"
+        }
+      ],
+      "label": "Focused engine dispositions"
+    },
+    {
+      "details": {
+        "findings": [],
+        "fully_reviewed_files": [
+          "wasm/address_test.go",
+          "wasm/board_test.go",
+          "wasm/boardstore_test.go",
+          "wasm/chainid_test.go",
+          "wasm/delete_test.go",
+          "wasm/env_test.go",
+          "wasm/estimate_test.go",
+          "wasm/manager_test.go",
+          "wasm/offerterms_test.go",
+          "wasm/ordering_test.go",
+          "wasm/presence_test.go",
+          "wasm/session_test.go",
+          "wasm/store_test.go",
+          "wasm/verify_test.go",
+          "wasm/walletblock_test.go",
+          "wasm/walletsent_test.go",
+          "wasm/walletsync_test.go",
+          "wasm/znn/address_test.go",
+          "wasm/znn/htlcabi_test.go",
+          "wasm/znn/ledger_test.go",
+          "wasm/znn/preimage_test.go"
+        ],
+        "new_evidence": [
+          {
+            "evidence": "TestPickFunding expressly expects the 90000-satoshi output to be selected when 400000 satoshis are agreed and no sufficient output exists. TestFundingIsOpen expects underfunded StateFunded records to remain eligible for searching until redeemed/refunded or a redeem has been broadcast.",
+            "implication": "Corroborates that short outputs are intentionally represented as Funding. These tests do not assert a spend or counter-leg commitment is refused while the amount is short.",
+            "locations": [
+              "wasm/ordering_test.go:334",
+              "wasm/ordering_test.go:362"
+            ],
+            "topic": "Underfunded Bitcoin output adoption"
+          },
+          {
+            "evidence": "TestCreateValidatesZenonFields explicitly requires blank Zenon fields to succeed. TestZenonVerifyParamsPerShape supplies both addresses in every case; TestZenonVerifyParties rejects wrong supplied expectations but does not require nonempty recipient expectations.",
+            "implication": "The optional-address attack precondition is supported behavior, while tests for supplied identities do not cover the missing expectation.",
+            "locations": [
+              "wasm/manager_test.go:121",
+              "wasm/ordering_test.go:249",
+              "wasm/ordering_test.go:298"
+            ],
+            "topic": "Blank Zenon identity is a supported creation path"
+          },
+          {
+            "evidence": "TestRefreshCountsFundingConfirmations expects mempool funding to be adopted with Confirmed false and depth zero. TestRefreshForgetsDepthWhenAFundingIsUnmined requires stale depth to clear. walletblock_test.go covers signed-block comparisons and endpoint equivalence, with no planCreate or planUnlock precondition tests.",
+            "implication": "Confirmation metadata is tested, but the missing gate before participant Zenon creation is not contradicted by these tests.",
+            "locations": [
+              "wasm/manager_test.go:525",
+              "wasm/manager_test.go:578",
+              "wasm/walletblock_test.go"
+            ],
+            "topic": "Funding confirmation tracking versus action gating"
+          },
+          {
+            "evidence": "TestParseRejectsLocktimesTheScriptEngineWillNot tests an eight-byte CLTV value and a five-byte padded value. templateWithRawLocktime emits its pushes with txscript.ScriptBuilder.AddData, which supplies canonical push opcodes.",
+            "implication": "Existing minimality tests address numeric byte encoding and do not cover replacing OP_DATA_32 or OP_DATA_20 with a longer PUSHDATA opcode carrying identical bytes.",
+            "locations": [
+              "wasm/verify_test.go:163",
+              "wasm/verify_test.go:197"
+            ],
+            "topic": "Minimal script-number encoding is tested, minimal push opcodes are not"
+          },
+          {
+            "evidence": "TestDecodeOfferValidatesEveryField mutates secret-hash size, key-hash size, network, role, leg and Bitcoin amount only. TestCheckCreateComparesAmountsNotSpellings covers equivalent decimals and changed numeric values. Board validation tests cover blank and negative Zenon amounts but not shell metacharacters or general nonnumeric input.",
+            "implication": "No reviewed test establishes that an attacker-controlled Zenon amount is numeric before CLI command rendering.",
+            "locations": [
+              "wasm/store_test.go:89",
+              "wasm/offerterms_test.go:92",
+              "wasm/board_test.go"
+            ],
+            "topic": "Offer amount validation tests omit Zenon numeric syntax"
+          },
+          {
+            "evidence": "TestFindPreimageWhenAStrangerUnlocked explicitly models an unlock signed by a stranger that pays the HTLC recipient. TestWalletSentRecordsAnUnlock checks recording of a reported hash against a stub that does not have the transaction; it does not test contract execution or wallet admission of an expired unlock.",
+            "implication": "The proxy-unlock premise is represented in repository tests. These fixtures still do not establish whether a failed or expired secret-bearing unlock becomes publicly observable, so the baseline's stale-verification question remains unresolved.",
+            "locations": [
+              "wasm/znn/preimage_test.go:111",
+              "wasm/walletsent_test.go:186"
+            ],
+            "topic": "Proxy unlock and stale-verification limit"
+          }
+        ],
+        "resolved_questions": [
+          {
+            "resolution": "No additional independent vulnerability was established from the remaining test source. The tests add supporting evidence and identify the boundaries of existing regression coverage for findings already sent to the parent.",
+            "topic": "New vulnerabilities"
+          },
+          {
+            "resolution": "Every current wasm/*_test.go and wasm/znn/*_test.go file was read in full. The 21 paths above are newly completed; wasm/htlc_test.go was already fully reviewed in baseline-result.json.",
+            "topic": "Coverage completeness"
+          },
+          {
+            "resolution": "Tests were inspected as source only. No test, application, local stub server or transaction was executed, and no network was accessed. Test fixtures and comments are not independent proof of live wallet, relay or chain behavior.",
+            "topic": "Execution and protocol limits"
+          }
+        ]
+      },
+      "label": "Test source review"
+    },
+    {
+      "details": {
+        "additional_page_review": {
+          "controls": [
+            "Both Vue pages contain static informational templates. Their scripts only import components/constants and define local tables; neither page reads swap state, private keys, route-controlled markup or remote content.",
+            "Dynamic template values come from local constant tables or imported code constants and use Vue interpolation. There is no v-html, innerHTML, eval, custom event handler, wallet invocation, API call, storage operation or network request in either page.",
+            "External links in DocsPage.vue use static or locally imported URLs with target=_blank and rel=noreferrer noopener. Router links use static names/paths and local constant section IDs.",
+            "LICENSE is the ISC permission and warranty disclaimer; it contains no executable content or configuration. The file inventory found no other top-level Markdown or license files beyond the already reviewed README.md and LICENSE."
+          ],
+          "documentation_corrections": [
+            "Both pages repeat the already reported overstatement that the Bitcoin contract constrains the signing key to the user-supplied payout address and that Ferry cannot steal funds. The runtime guard is payoutAddress, not a Bitcoin covenant; these are documentation discrepancies, not additional independent findings.",
+            "DocsPage.vue retains stale instructions to paste Zenon preimages manually because an HTLC entry is deleted, although manager.go/ledger.go automatically recover the preimage from the public ledger. It also states Bitcoin wallets are never contacted, which is stale relative to the wallet integration.",
+            "DocsPage.vue explicitly advises resolving underpayment before exchanging funds, but this prose does not enforce the missing amount gate identified in the engine audit."
+          ],
+          "execution": "Read only; no application, test or network execution.",
+          "fully_reviewed_ranges": [
+            "ui/src/pages/DocsPage.vue:1-928",
+            "ui/src/pages/UnderTheHoodPage.vue:1-661",
+            "LICENSE:1-13"
+          ],
+          "new_findings": []
+        },
+        "counterevidence": [
+          {
+            "observation": "The historical review explicitly leaves pickFunding's disregard of confirmation status as intentional so refunds can be pre-signed early. That is valid for observation and recovery, but does not establish safe authorization for the participant's ZNN funding. The automated devnet harness proposes participant Create with no Bitcoin funding, and the manual recipe progresses from unconfirmed funding observation to Zenon creation without a required confirmation step.",
+            "paths": [
+              "docs/REVIEW-2026-09.md",
+              "docs/TESTING.md",
+              "scripts/wallet-devnet.mjs"
+            ],
+            "related_to": "Participant funding based on unconfirmed Bitcoin"
+          },
+          {
+            "observation": "Blank Zenon address fields are expressly permitted and tested; they are not merely malformed legacy records. For creating a user's own Zenon HTLC, adoption of the connected wallet can be valid. This does not establish the expected payout recipient when unlocking a counterparty's HTLC, which is the engine finding.",
+            "paths": [
+              "docs/TESTING.md",
+              "docs/EXTENSION-WALLET.md",
+              "scripts/smoke.mjs"
+            ],
+            "related_to": "Missing expected Zenon recipient"
+          },
+          {
+            "observation": "Docs describe wallet approval followed by signing/publication and independently observed successful Unlock behavior, but no expired/reclaimed Unlock test. Reclaim and real expiry paths are explicitly listed as untested. These docs cannot prove whether a failed Unlock becomes publicly visible; the external wallet/go-zenon publication question remains unresolved.",
+            "paths": [
+              "docs/EXTENSION-WALLET.md",
+              "docs/TESTING.md",
+              "README.md"
+            ],
+            "related_to": "Expired/missing Zenon HTLC disclosure"
+          },
+          {
+            "observation": "Unencrypted localStorage, nonreproducible builds, shared origin, lack of automatic fee bumping and unknown live timeout behavior are acknowledged design/testing limitations. They are not newly discovered independent vulnerabilities in these scripts/docs.",
+            "paths": [
+              "docs/SECURITY.md",
+              "docs/DEPLOY.md",
+              "README.md"
+            ],
+            "related_to": "Availability and deployment risks"
+          }
+        ],
+        "documentation_inconsistencies": [
+          {
+            "observation": "Absolute statements that Ferry or a counterparty cannot steal funds, that both branches are constrained to the supplied payout address by the contract, and that no chain key is held by the page overstate the implementation. The application holds ephemeral Bitcoin signing keys; payoutAddress is an application guard, not a covenant in the Bitcoin script. Treat these as corrections needed alongside the audit's existing findings, not separate exploit findings.",
+            "paths": [
+              "README.md",
+              "docs/SECURITY.md"
+            ]
+          },
+          {
+            "observation": "README's board section still describes optional wallet proofs and unavailable Zenon message signing, whereas BOARD and EXTENSION-WALLET describe mandatory per-chain proofs and signMessage support. Runtime source remains authoritative.",
+            "paths": [
+              "README.md",
+              "docs/BOARD.md",
+              "docs/EXTENSION-WALLET.md"
+            ]
+          },
+          {
+            "observation": "Some wording says development and production can share an origin without sharing state. Namespaces prevent accidental listing overlap, not access by same-origin scripts; DEPLOY and SECURITY correctly recommend separate origins and explain the exposure.",
+            "paths": [
+              "README.md",
+              "docs/DEPLOY.md",
+              "docs/BOARD.md"
+            ]
+          }
+        ],
+        "findings": [],
+        "fully_reviewed_files": [
+          "scripts/smoke.mjs",
+          "scripts/wallet-devnet.mjs",
+          "scripts/wallet-provider.mjs",
+          "docs/ARCHITECTURE.md",
+          "docs/BOARD.md",
+          "docs/DEPLOY.md",
+          "docs/EXTENSION-WALLET.md",
+          "docs/REVIEW-2026-09.md",
+          "docs/SECURITY.md",
+          "docs/TESTING.md",
+          "README.md",
+          "ui/src/pages/DocsPage.vue",
+          "ui/src/pages/UnderTheHoodPage.vue",
+          "LICENSE"
+        ],
+        "limitations": [
+          "This is source review, not execution of the three test scripts.",
+          "Historical green-test and live-chain claims in documentation were read as claims, not reproduced.",
+          "External wallet and go-zenon source are outside these requested files."
+        ],
+        "resolved_questions": [
+          {
+            "answer": "No. They are local test drivers. The two WASM scripts use a fixed go env GOROOT child-process invocation and local artifact paths. wallet-provider uses local module import and a stub provider.",
+            "question": "Do these three scripts expose a service or accept remote caller-controlled shell commands?"
+          },
+          {
+            "answer": "No. Only documentation of successful Unlock exists in this packet; external rejection/publication behavior remains unproven.",
+            "question": "Does new code evidence validate expired Unlock theft?"
+          },
+          {
+            "answer": "No. All scripts and documents were treated as data. No application/test execution, dependency fetching, repository modification or network access occurred.",
+            "question": "Were any provided testing or deployment instructions executed?"
+          }
+        ],
+        "security_controls": [
+          {
+            "covered_properties": [
+              "Build environment and storage-prefix separation",
+              "Public offer fields exclude private key and preimage",
+              "Wrong contract beneficiary and malformed offers are refused",
+              "Offline recovery checks branch ownership, contract address and locktime consistency",
+              "Import preserves existing records and rejects structurally invalid ones",
+              "Session encryption/signature tampering and wrong-room refusal",
+              "Board signatures, address proof failures, slot preservation, withdrawal and encrypted take delivery",
+              "Presence signatures, network tags and freshness limits",
+              "Unknown API methods, unknown request fields and invalid networks are refused"
+            ],
+            "observation": "Uses in-memory localStorage, executes the explicitly selected local WASM artifact with the matching shim from go env GOROOT, and calls child_process.execFileSync with a fixed executable/argument array rather than a shell. Test inputs do not flow into shell command text.",
+            "paths": [
+              "scripts/smoke.mjs"
+            ]
+          },
+          {
+            "limitation": "Tests successful participant HTLC proposal without any actual Bitcoin funding. This confirms that proposal construction lacks the funding gate documented in the existing engine finding; it is not a new finding.",
+            "observation": "Fixed regtest and loopback node settings; in-memory storage; builds proposals but never invokes a wallet, signs a Zenon block, or broadcasts to either chain. Checks ABI selector, SHA-256 type, key size, token/base-unit amount, recipient and timelock ordering.",
+            "paths": [
+              "scripts/wallet-devnet.mjs"
+            ]
+          },
+          {
+            "observation": "Loads the repository's local TypeScript wallet module against a stub window. No network or real wallet is involved. Covers provider capability detection, modern response shape, JSON roundtrip before structured clone, normalization of rejection objects, silent state reads, wallet-change events and unsubscribe/revocation.",
+            "paths": [
+              "scripts/wallet-provider.mjs"
+            ]
+          },
+          {
+            "observation": "Explicitly identifies unencrypted localStorage and shared-origin exposure, recommends dedicated origins, describes recovery/export sensitivity, explains broad connect-src and the stronger script-src control, and requires a host header for frame-ancestors/X-Frame-Options because the meta policy cannot enforce framing restrictions.",
+            "paths": [
+              "docs/SECURITY.md",
+              "docs/DEPLOY.md",
+              "docs/TESTING.md"
+            ]
+          },
+          {
+            "observation": "Documents relays as untrusted, local signature/proof verification, board-key/address binding, sealed takes, session-code secrecy, role-dependent timelock ordering, account and chain synchronization, and explicit separation between public discovery metadata and swap verification.",
+            "paths": [
+              "docs/BOARD.md",
+              "docs/EXTENSION-WALLET.md",
+              "docs/ARCHITECTURE.md"
+            ]
+          }
+        ]
+      },
+      "label": "Tooling and documentation review"
+    },
+    {
+      "details": [
+        {
+          "answer": "ReadPost recomputes and verifies the Nostr signature, checks the addressable slot against the post ID, and the UI keys replacements by author plus slot. Another key's copied offer remains attributed to that other key. Tests cover content tampering, rehashed tampering, re-signing, slot mismatch, and newer replacement timestamps.",
+          "evidence": [
+            "wasm/boardpost.go:287-322",
+            "wasm/boardpost.go:464-534",
+            "wasm/board_test.go:181-323",
+            "ui/src/core/composables/useBoard.ts:274-319"
+          ],
+          "question": "Can relays modify board offers or impersonate their established author?"
+        },
+        {
+          "answer": "No. Bitcoin compact message proofs recover and match an address-derived key; Zenon proofs verify Ed25519 and derive the address. Statements bind the wallet address to the board key. ReadPost does not badge an unrelated address, while legacy or unproven public posts remain readable with their proof status. Incoming take addresses are optional for compatibility and are not remotely verified proofs; the outgoing local proof gate must not be treated as authentication of a malicious sender.",
+          "evidence": [
+            "wasm/board.go",
+            "wasm/boardpost.go:464-534",
+            "wasm/boardpost.go:703-746",
+            "wasm/board_test.go:400-661",
+            "wasm/board_test.go:810-925",
+            "ui/src/components/BoardRow.vue",
+            "ui/src/components/BoardInbox.vue"
+          ],
+          "question": "Are address proofs accepted as assertions from a relay?"
+        },
+        {
+          "answer": "Takes use an ECDH-derived key, AES-GCM, author signature, and explicit recipient check. A third party cannot decrypt or alter a valid existing take under the reviewed primitives. An unsolicited sender can create its own take for a public board key; this is intentional board discovery, not a private-room authentication bypass.",
+          "evidence": [
+            "wasm/boardpost.go:749-871",
+            "wasm/session.go:354-395",
+            "wasm/board_test.go:666-761"
+          ],
+          "question": "Can a third party learn or change a take's private session code from a relay?"
+        },
+        {
+          "answer": "Possession of the room code derives both the encryption and signing material. OpenSession checks the expected derived key, canonical event ID, signature, and authenticated ciphertext. It prevents outsiders without the room code from changing session messages. It does not provide distinct per-person authentication between people sharing the same room, and the displayed peer ID is not an independently authenticated identity.",
+          "evidence": [
+            "wasm/session.go:124-150",
+            "wasm/session.go:293-395",
+            "wasm/session_test.go",
+            "ui/src/core/composables/useSession.ts:498-541",
+            "ui/src/components/SessionPanel.vue"
+          ],
+          "question": "What authenticates a private session participant?"
+        },
+        {
+          "answer": "No. Board acceptance is an explicit UI action that joins a session, links the post and pre-fills proposed terms; it does not by itself fund a swap. The session message schema and fill logic do not send the private preimage. Resync emits ordinary public handoffs, while funded/moved notifications trigger local refresh/check paths rather than accepting the announcement as chain truth. The contract replacement and economic handlers are already under parent review and are not duplicated here.",
+          "evidence": [
+            "ui/src/components/BoardInbox.vue:98-115",
+            "ui/src/core/composables/useBoard.ts:693-777",
+            "wasm/session_api.go:70-165",
+            "wasm/session_test.go:188-230",
+            "ui/src/core/composables/useSession.ts:563-709"
+          ],
+          "question": "Do takes automatically commit a swap or disclose its private preimage?"
+        },
+        {
+          "answer": "ReadPresence verifies author, kind, network, and timestamp; it refuses beats beyond the permitted future skew and clamps modest future skew to the reader's time. Presence expiry and author attribution are covered by source tests. These controls apply to presence events and do not bound take timestamps.",
+          "evidence": [
+            "wasm/boardpost.go:615-665",
+            "wasm/presence_test.go"
+          ],
+          "question": "Can a future-dated heartbeat indefinitely mark an author online?"
+        },
+        {
+          "answer": "The reviewed note, peer, address, offer, and transcript fields are displayed using Vue text interpolation rather than raw HTML. No independent markup execution path was found in these components. Numeric timestamp conversion is separately reportable because it throws during rendering.",
+          "evidence": [
+            "ui/src/components/BoardInbox.vue:83-95",
+            "ui/src/components/BoardRow.vue",
+            "ui/src/components/SessionPanel.vue",
+            "ui/src/pages/BoardPage.vue"
+          ],
+          "question": "Can user-supplied board/session text become markup or an execution sink in the reviewed UI?"
+        },
+        {
+          "answer": "Store.DeleteMyPost refuses a standing open/taken record and UI disables Forget for the same state. Withdrawal signs a replacement plus deletion request; relay compliance is external and not guaranteed. Tests distinguish Standing from Live and cover refused and permitted deletion states.",
+          "evidence": [
+            "wasm/boardstore.go",
+            "wasm/boardstore_test.go",
+            "wasm/board_api.go",
+            "ui/src/components/MyPostRow.vue:44-46",
+            "ui/src/components/MyPostRow.vue:132-162"
+          ],
+          "question": "Does local forgetting strand an offer which is still active on relays?"
+        },
+        {
+          "answer": "No independently demonstrated security impact was established from the inspected session lifecycle state, user-confirmed pending terms, or UI-only band checks. These were not promoted from possible hardening concerns into findings. Chain/economic guard findings assigned to other reviewers remain outside this result.",
+          "evidence": [
+            "ui/src/core/composables/useSession.ts",
+            "ui/src/core/composables/useBoard.ts",
+            "ui/src/components/BoardTakeDialog.vue"
+          ],
+          "question": "Were lifecycle races or take amount discrepancies established as additional vulnerabilities?"
+        }
+      ],
+      "label": "Board/session controls"
+    }
+  ],
+  "surfaces": [
+    {
+      "disposition": "reported",
+      "id": "surface_bitcoin-and-zenon-transaction-engine-2",
+      "label": "Bitcoin and Zenon transaction engine",
+      "notes": "Bitcoin HTLC parsing, funding, signing, recovery, Zenon verification/ABI/ledger, chain identity, transport and wallet synchronization reviewed. Four high and one medium protocol findings; expired Unlock publication remains deferred.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_ui-actions-recovery-wallets-and-browser-integration-2",
+      "label": "UI actions, recovery, wallets, and browser integration",
+      "notes": "Manual and automatic actions, offers, sessions, imports/exports, browser storage, routing, wallet dispatch and recovery reviewed. CLI command injection reported; UI gates corroborate protocol findings.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_build-deployment-configuration-and-lockfiles-2",
+      "label": "Build, deployment, configuration, and lockfiles",
+      "notes": "Build/deploy scripts, workflow permissions, CSP, serving configuration, manifests and lock metadata reviewed. npm lock pins 318 dependencies, including nom-ui at a Git commit; Go checksums present. No dependency installation, advisory database lookup, production header verification, or vendored dependency source audit.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_go-regression-test-sources-2",
+      "label": "Go regression test sources",
+      "notes": "All 22 Go test files fully source-reviewed. Existing tests corroborate several missing conditions. None of these tests executed.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_development-harnesses-and-documentation-2",
+      "label": "Development harnesses and documentation",
+      "notes": "All development scripts and Markdown/docs UI reviewed. No new tooling finding. Fixed-destination guarantees, storage-independent recovery, network/redirect claims and deployment branch instructions have source mismatches retained in threat model/observations.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_signed-board-discovery-and-encrypted-sessions-2",
+      "label": "Signed board discovery and encrypted sessions",
+      "notes": "Signed-message authenticity and encryption reviewed; one low-severity shared inbox rendering issue reported.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_expired-or-missing-zenon-htlc-before-unlock",
+      "label": "Expired or missing Zenon HTLC before Unlock",
+      "notes": "Source confirms stale verification can permit construction of secret-bearing Unlock after expiry or entry disappearance. External Syrius/go-zenon rejection and publication timing is not in the repository, so disclosure and funds loss are not established.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_bitcoin-and-zenon-transaction-engine",
+      "label": "Bitcoin and Zenon transaction engine",
+      "notes": "Focused engine investigation completed, with original candidates preserved.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_ui-actions-recovery-wallets-and-browser-integration",
+      "label": "UI actions, recovery, wallets, and browser integration",
+      "notes": "Parent completed source review.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_build-deployment-configuration-and-lockfiles",
+      "label": "Build, deployment, configuration, and lockfiles",
+      "notes": "Current source and structured lockfile metadata inspected; no live advisories or dependency source audit implied.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_go-regression-test-sources",
+      "label": "Go regression test sources",
+      "notes": "All 22 Go test files reviewed; tests not executed.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "surface_development-harnesses-and-documentation",
+      "label": "Development harnesses and documentation",
+      "notes": "All scripts and docs plus informational UI pages reviewed. Documentation discrepancies retained.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_signed-board-discovery-and-encrypted-sessions",
+      "label": "Signed board discovery and encrypted sessions",
+      "notes": "Completed source review; inbox timestamp candidate awaiting parent assessment.",
+      "receiptRefs": []
+    }
+  ]
+}
