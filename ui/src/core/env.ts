@@ -27,7 +27,7 @@ export const FERRY_ENV: FerryEnv = __FERRY_ENV__ === 'dev' ? 'dev' : 'prod'
 export const isDev = FERRY_ENV === 'dev'
 
 /** Shown in the footer. Bump by hand until a release process needs more. */
-export const APP_VERSION = 'v0.1.0'
+export const APP_VERSION = 'v0.1.1'
 
 /**
  * What a browser that has never opened this instance starts with.

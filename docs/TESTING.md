@@ -41,7 +41,7 @@ This half genuinely is "a wallet you already have".
 
 ### Your Zenon wallet — the Syrius **extension**, not the desktop app
 
-Install [syrius-extension v0.3.1][syrius] or later. It injects a provider at
+Install [syrius-extension v0.3.2][syrius] or later. It injects a provider at
 `window.zenon` and will sign and publish an arbitrary account block on request,
 which is all an HTLC call is — so create, unlock and reclaim each become one
 button, with your key never leaving the extension.
@@ -792,5 +792,5 @@ connect again. And use `page reload` rather than `page goto` when only the hash
 changes — the router moves without reloading, so anything the page read at
 startup, an identity or a proof, stays on screen after it has changed.
 
-[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.1
+[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.2
 [znn-cli]: https://github.com/zenon-network/znn_cli_dart

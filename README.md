@@ -510,7 +510,7 @@ Both run in CI before anything is published.
 
 The app speaks Esplora and nothing else, and a Bitcoin Core regtest node offers
 Core RPC and no Esplora — so there is nothing for a local build to point at.
-`scripts/regtest-esplora.mjs` is that missing adapter: it serves the six
+`scripts/regtest-esplora.mjs` is that missing adapter: it serves the seven
 endpoints `wasm/chain/esplora.go` calls, backed by the regtest node's RPC, with
 the CORS headers a browser requires.
 
@@ -665,5 +665,5 @@ understands that template can audit or spend a contract Ferry produces.
 
 ISC — see [LICENSE](LICENSE).
 
-[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.1
+[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.2
 [znn-cli]: https://github.com/zenon-network/znn_cli_dart

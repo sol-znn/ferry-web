@@ -7,7 +7,7 @@ operations, so the page builds the account block and the
 This document is the boundary: what crosses it, what each side decides, what is
 checked either side of it, and what has actually been driven against a chain.
 
-Target version: **v0.3.1 or later**.
+Target version: **v0.3.2 or later**.
 
 ---
 
@@ -364,4 +364,4 @@ again. It surfaces as the recovery check failing with `Cannot set properties of
 null`, because the module wrote `ferry.dev.swap.*` and the script looked for
 `ferry.swap.*`. Use `npm run smoke:dev` against a development module.
 
-[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.1
+[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.2
