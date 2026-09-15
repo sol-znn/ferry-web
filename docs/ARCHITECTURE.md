@@ -254,7 +254,7 @@ rather than committing it. The shim is version-locked to the compiler.
   seam between JavaScript and Go — the boundary, the store, the recovery path.
 - **`scripts/regtest-esplora.mjs`**, because choosing Esplora as the only
   backend took the local chain with it. A page cannot reach a regtest node's
-  Core RPC, so a local build had nothing to talk to. The shim serves the six
+  Core RPC, so a local build had nothing to talk to. The shim serves the seven
   endpoints `chain/esplora.go` calls, over that node, with CORS. It is the
   smallest thing that makes the *browser* testable against a chain nobody has to
   fund.
