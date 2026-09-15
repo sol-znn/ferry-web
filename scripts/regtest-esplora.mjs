@@ -4,7 +4,7 @@
 // README — which is right for a page and leaves local development with no chain
 // to point at, since a regtest node offers Core RPC and no Esplora.
 //
-// This is that missing adapter and only that: the six endpoints
+// This is that missing adapter and only that: the seven endpoints
 // wasm/chain/esplora.go actually calls, backed by the regtest node's RPC, with
 // the CORS headers a browser demands. A development tool — no auth, no
 // pagination, no caching policy, its index in memory. Do not put it in front of
@@ -14,6 +14,7 @@
 //   GET  /block-height/<h>         -> the block hash at that height
 //   GET  /address/{addr}/utxo      -> [{txid, vout, value, status}]
 //   GET  /tx/{txid}/hex            -> "0200000001..."
+//   GET  /tx/{txid}/status         -> {confirmed, block_height, block_hash, block_time}
 //   GET  /tx/{txid}/outspend/{n}   -> {spent, txid, vin, status}
 //   GET  /fee-estimates            -> {"1": 2, ...}   (sat/vB)
 //   POST /tx  (body: raw hex)      -> txid
@@ -98,6 +99,8 @@ let outs = new Map()
 let byAddr = new Map()
 /** Confirmed: outpoint -> {txid, vin, status} of the transaction spending it. */
 let spent = new Map()
+/** Confirmed: txid -> the status of the block it is in. */
+let txStatus = new Map()
 /** height -> block hash, kept so a regtest reorg or wipe is noticed. */
 let hashAt = new Map()
 let scanned = 0
@@ -131,6 +134,7 @@ function resetConfirmed() {
   outs = new Map()
   byAddr = new Map()
   spent = new Map()
+  txStatus = new Map()
   hashAt = new Map()
   scanned = 0
 }
@@ -168,7 +172,10 @@ async function syncBlocks() {
       block_hash: hash,
       block_time: block.time,
     }
-    for (const tx of block.tx) indexTx(tx, status, outs, byAddr, spent)
+    for (const tx of block.tx) {
+      indexTx(tx, status, outs, byAddr, spent)
+      txStatus.set(tx.txid, status)
+    }
     hashAt.set(h, hash)
     scanned = h
   }
@@ -343,7 +350,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, outspend(m[1], Number(m[2])))
     }
 
-    // Not part of the six, but the two things worth being able to ask a shim.
+    // How deep a transaction is, which is how the app counts a funding's
+    // confirmations. Answered from the index rather than getrawtransaction, so
+    // it needs no -txindex, and a txid neither layer holds is a 404 the way
+    // Esplora says it -- the app reads that as "not yet", never as "gone".
+    if ((m = path.match(/^\/tx\/([0-9a-fA-F]{64})\/status$/))) {
+      await sync()
+      const txid = m[1].toLowerCase()
+      if (txStatus.has(txid)) return json(res, 200, txStatus.get(txid))
+      if (memTx.has(txid)) return json(res, 200, UNCONFIRMED)
+      return send(res, 404, 'Transaction not found')
+    }
+
+    // Not part of the seven, but the two things worth being able to ask a shim.
     if (path === '/' || path === '/_shim/status') {
       await sync()
       return json(res, 200, {

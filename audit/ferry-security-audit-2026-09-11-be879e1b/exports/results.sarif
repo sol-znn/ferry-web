@@ -1,0 +1,934 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "automationDetails": {
+        "id": "f57e14cb-0b12-4e58-9724-a1cd8419eb3c"
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "warning",
+              "message": {
+                "text": "Source confirms stale verification can permit construction of secret-bearing Unlock after expiry or entry disappearance. External Syrius/go-zenon rejection and publication timing is not in the repository, so disclosure and funds loss are not established."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "Original worker discovery payload preserved before parent validation and consolidation."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "Original worker discovery payload preserved before parent validation and consolidation."
+              }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "codexSecurityCoverageCompleteness": "partial",
+        "codexSecuritySchemaVersion": "1.0",
+        "codexSecurityTargetKind": "git_revision"
+      },
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/htlc.go"
+                },
+                "region": {
+                  "endLine": 182,
+                  "startLine": 179
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/htlc.go"
+                },
+                "region": {
+                  "endLine": 168,
+                  "startLine": 148
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 421,
+                  "startLine": 403
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/txbuild.go"
+                },
+                "region": {
+                  "endLine": 204,
+                  "startLine": 193
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:dynamic-push-length"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/htlc.go"
+                },
+                "region": {
+                  "endLine": 199,
+                  "startLine": 179
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Contract audit accepts a script that blocks the victim's redeem branch\n\nA Bitcoin initiator can send a nonminimal push encoding that passes Ferry's contract audit but fails its later redeem validation. The Zenon participant may commit funds to the matching HTLC while its normal Bitcoin claim is unusable; the attacker can still use the refund branch.\n\nSeverity: high\n\nCategory: Atomic swap\n\nWeaknesses: CWE-20\n\nRemediation:\nRebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.\n\nRemediation tests:\n- Reject nonminimal OP_PUSHDATA1/2/4 encodings at every dynamic contract position during audit.\n- Require audited scripts to equal the canonical rebuild and verify both branch spends under the same flags used by the signer.\n- Ensure a rejected contract cannot enable Zenon Create or replace a previously accepted contract.\n\nPreventive controls:\n- Make the accepted contract representation canonical at the initial audit boundary and share it with the spend builder."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:a71285dac473f06a8e94861209ff2fc21f0c7c8440192e03f9ebbbd49984278d"
+          },
+          "properties": {
+            "category": "atomic-swap",
+            "confidence": "high",
+            "findingId": "csf_e23fbf39e7af8d30856cf5e6",
+            "occurrenceId": "occ_682e4961f98cdd116324d42f",
+            "severity": "high"
+          },
+          "ruleId": "atomic-swap.nonminimal-contract-push",
+          "ruleIndex": 3
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/zenon-commands.ts"
+                },
+                "region": {
+                  "endLine": 98,
+                  "startLine": 94
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "user_input"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/swap.go"
+                },
+                "region": {
+                  "endLine": 517,
+                  "startLine": 502
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/swap.go"
+                },
+                "region": {
+                  "endLine": 551,
+                  "startLine": 541
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/pages/ActivePage.vue"
+                },
+                "region": {
+                  "endLine": 550,
+                  "startLine": 532
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 279,
+                  "startLine": 266
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/zenon-commands.ts"
+                },
+                "region": {
+                  "endLine": 74,
+                  "startLine": 60
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/SwapCard.vue"
+                },
+                "region": {
+                  "endLine": 1332,
+                  "startLine": 1316
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:shell-template"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/zenon-commands.ts"
+                },
+                "region": {
+                  "endLine": 99,
+                  "startLine": 92
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "An offer amount becomes shell syntax in copied CLI commands\n\nA malicious offer can place shell substitution syntax in its Zenon amount. Ferry copies that string into the optional znn-cli command without quoting. A user who fills the command's wallet placeholders and runs it can execute the counterparty's command with their local account privileges.\n\nSeverity: medium\n\nCategory: Command injection\n\nWeaknesses: CWE-78\n\nRemediation:\nValidate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.\n\nRemediation tests:\n- Reject shell metacharacters, substitutions, whitespace and invalid numeric formats at offer decoding and swap creation.\n- Never emit a runnable command for incomplete or invalid terms; test all interpolated values, including node URLs and IDs.\n- Verify safe quoting by comparing parsed shell arguments in an isolated nonexecuting parser, and preserve valid decimal amounts.\n\nPreventive controls:\n- Keep peer input as typed data; validate positive decimals and encode every shell argument, or replace shell snippets with a structured wallet invocation."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:120d10df75bf153748712e42cdcd7d5c2191eb8bd140e86e5a6ddd2fd13daada"
+          },
+          "properties": {
+            "category": "command-injection",
+            "confidence": "high",
+            "findingId": "csf_095ef75befb2c17e1f6fce8e",
+            "occurrenceId": "occ_84d467080f2c6983a7adbdf5",
+            "severity": "medium"
+          },
+          "ruleId": "command-injection.offer-amount-cli",
+          "ruleIndex": 5
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/BoardInbox.vue"
+                },
+                "region": {
+                  "endLine": 94,
+                  "startLine": 94
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/nostr.ts"
+                },
+                "region": {
+                  "endLine": 199,
+                  "startLine": 183
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/boardpost.go"
+                },
+                "region": {
+                  "endLine": 871,
+                  "startLine": 842
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/composables/useBoard.ts"
+                },
+                "region": {
+                  "endLine": 332,
+                  "startLine": 321
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/composables/useBoard.ts"
+                },
+                "region": {
+                  "endLine": 178,
+                  "startLine": 172
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:date-format"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/BoardInbox.vue"
+                },
+                "region": {
+                  "endLine": 96,
+                  "startLine": 92
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "A crafted take timestamp disables the shared board inbox\n\nA malicious configured relay can deliver a validly signed, encrypted take whose timestamp crashes date formatting in the shared board inbox. This blocks rendering of legitimate requests as well as the malformed one.\n\nSeverity: low\n\nCategory: Denial of service\n\nWeaknesses: CWE-20, CWE-248\n\nRemediation:\nReject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls.\n\nRemediation tests:\n- A valid signed/encrypted take outside the supported timestamp range must be rejected or safely displayed.\n- A malformed take mixed with legitimate requests must not prevent accepting or dismissing legitimate requests.\n\nPreventive controls:\n- Validate numeric/time bounds at untrusted message entry and make rendering functions total with per-item error containment."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:c0f926e1352b16f363340f215dc8bdc359b92f1e1146c09bea5209a4bfe311be"
+          },
+          "properties": {
+            "category": "denial-of-service",
+            "confidence": "high",
+            "findingId": "csf_f86b1f17a253c04802614722",
+            "occurrenceId": "occ_a26a0ab1080e05dde4ec5766",
+            "severity": "low"
+          },
+          "ruleId": "denial-of-service.board-inbox-timestamp",
+          "ruleIndex": 6
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/walletblock.go"
+                },
+                "region": {
+                  "endLine": 239,
+                  "startLine": 235
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/SwapCard.vue"
+                },
+                "region": {
+                  "endLine": 247,
+                  "startLine": 242
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/ZenonWallet.vue"
+                },
+                "region": {
+                  "endLine": 267,
+                  "startLine": 251
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/walletblock.go"
+                },
+                "region": {
+                  "endLine": 334,
+                  "startLine": 297
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:create-contract-only"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/walletblock.go"
+                },
+                "region": {
+                  "endLine": 240,
+                  "startLine": 224
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Zenon funds can be locked against replaceable Bitcoin funding\n\nWhen Bitcoin initiates the swap, Ferry offers to lock the participant's Zenon funds as soon as an unconfirmed Bitcoin output appears. The initiator can replace that payment, then use the secret it already knows to collect the Zenon HTLC.\n\nSeverity: high\n\nCategory: Atomic swap\n\nWeaknesses: CWE-841\n\nRemediation:\nWhen Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.\n\nRemediation tests:\n- For Bitcoin-initiated swaps, reject Zenon Create with missing, unconfirmed, underfunded, spent, or mismatched Bitcoin funding.\n- Revalidate immediately before wallet dispatch and invalidate plans when funding changes.\n- Verify the Zenon-initiated ordering remains able to create its first leg without Bitcoin funding.\n\nPreventive controls:\n- Require a current role-aware Bitcoin funding proof at the engine's counter-leg commitment boundary."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:187394d9f9620b02b4143121c83620c014e0df4c7d85364c1989d01834993673"
+          },
+          "properties": {
+            "category": "atomic-swap",
+            "confidence": "high",
+            "findingId": "csf_76b4938b8a19d6738fdc70fe",
+            "occurrenceId": "occ_aa3f8ceac42e81dcb30a1e5a",
+            "severity": "high"
+          },
+          "ruleId": "atomic-swap.unconfirmed-bitcoin-commitment",
+          "ruleIndex": 4
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 441,
+                  "startLine": 438
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/core/composables/useSession.ts"
+                },
+                "region": {
+                  "endLine": 630,
+                  "startLine": 612
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/txbuild.go"
+                },
+                "region": {
+                  "endLine": 160,
+                  "startLine": 145
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/txbuild.go"
+                },
+                "region": {
+                  "endLine": 204,
+                  "startLine": 193
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:contract-overwrite"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 454,
+                  "startLine": 429
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "A session peer can replace the script of an already-funded swap\n\nA counterparty can send a second valid contract through the live session after the first was funded. Ferry overwrites the script while retaining the original funding outpoint, so the victim's later redeem spends that outpoint using the wrong script and is rejected.\n\nSeverity: medium\n\nCategory: Atomic swap\n\nWeaknesses: CWE-841\n\nRemediation:\nTreat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.\n\nRemediation tests:\n- Once either leg is committed, reject a different contract while permitting byte-identical retransmissions.\n- Check that rejected re-audit leaves contract, funding, HTLC verification and refund artifacts unchanged.\n- Before signing, compare the actual referenced funding output script with the frozen contract, including restored backups.\n\nPreventive controls:\n- Freeze the exact contract bytes and expected terms at commitment; treat identical session resends as idempotent."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:234fec943bcfae8dbdf80c1aaf9cd70d140b6b2075adb797b3c27652295c63ce"
+          },
+          "properties": {
+            "category": "atomic-swap",
+            "confidence": "high",
+            "findingId": "csf_cbfdd0239239945ca02a5c31",
+            "occurrenceId": "occ_b63511994b830e71124c1a44",
+            "severity": "medium"
+          },
+          "ruleId": "atomic-swap.funded-contract-replacement",
+          "ruleIndex": 0
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 951,
+                  "startLine": 945
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "user_input"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 574,
+                  "startLine": 533
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/SwapCard.vue"
+                },
+                "region": {
+                  "endLine": 332,
+                  "startLine": 327
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ui/src/components/SwapCard.vue"
+                },
+                "region": {
+                  "endLine": 744,
+                  "startLine": 737
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:redeem-broadcast"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 974,
+                  "startLine": 944
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Auto Mode reveals the secret for an underfunded Bitcoin payment\n\nA Bitcoin participant can pay less than the agreed amount and still make a Zenon initiator's Auto Mode redeem. The redeem publishes the secret, allowing the participant to take the full Zenon payment.\n\nSeverity: high\n\nCategory: Atomic swap\n\nWeaknesses: CWE-841\n\nRemediation:\nEnforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.\n\nRemediation tests:\n- With Auto Mode on, a confirmed spendable underpayment must not produce a redeem or reveal the initiator's secret.\n- Check the same invariant through the direct WASM redeem API, including stale or replaced funding.\n- A fully funded, confirmed swap must still complete in both role/direction combinations; preserve explicit recovery when the secret is already public.\n\nPreventive controls:\n- Own the first-secret-disclosure guard inside the Go engine, with fresh confirmed funding, minimum agreed value, contract binding, and safe time remaining."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:fe667d11977de7226d2348b10d6a99e2381716edff1b33153dcd8fc89111db25"
+          },
+          "properties": {
+            "category": "atomic-swap",
+            "confidence": "high",
+            "findingId": "csf_ce888e80f75eec0598f376d0",
+            "occurrenceId": "occ_cc1eb6ed33803a3fcec8c671",
+            "severity": "high"
+          },
+          "ruleId": "atomic-swap.insufficient-bitcoin-payment",
+          "ruleIndex": 2
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/znn/client.go"
+                },
+                "region": {
+                  "endLine": 453,
+                  "startLine": 450
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "user_input"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 237,
+                  "startLine": 220
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 1082,
+                  "startLine": 1074
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 1133,
+                  "startLine": 1120
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "outcome"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/manager.go"
+                },
+                "region": {
+                  "endLine": 1244,
+                  "startLine": 1225
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/walletblock.go"
+                },
+                "region": {
+                  "endLine": 383,
+                  "startLine": 356
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/walletsync.go"
+                },
+                "region": {
+                  "endLine": 301,
+                  "startLine": 283
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "evidence:conditional-term-checks"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "wasm/znn/client.go"
+                },
+                "region": {
+                  "endLine": 473,
+                  "startLine": 450
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Missing Zenon terms can verify an HTLC that pays the attacker\n\nLeaving the optional own Zenon address blank disables the recipient comparison. Ferry can mark an attacker-payable HTLC as verified and send an Unlock containing the victim's secret. A missing agreed amount similarly skips the amount comparison.\n\nSeverity: high\n\nCategory: Atomic swap\n\nWeaknesses: CWE-754\n\nRemediation:\nRequire a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.\n\nRemediation tests:\n- An incoming HTLC must remain unverified when expected recipient or positive amount is absent, including manual and session discovery.\n- A matching token/hash/expiry with an attacker recipient must be refused before Unlock or first-secret disclosure.\n- Connecting a wallet after creation must not silently adopt an attacker-observed recipient as the agreed destination.\n\nPreventive controls:\n- Use an explicit complete agreed-terms type before verification; missing expectations must yield an incomplete verdict, never success."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:ba82f8076dfcafd84ab4f1450bcded2018cf29be7a7d535049de2f21027c302b"
+          },
+          "properties": {
+            "category": "atomic-swap",
+            "confidence": "high",
+            "findingId": "csf_7d1966111fc33778db6991d3",
+            "occurrenceId": "occ_ecf67f641f153f663172ec7c",
+            "severity": "high"
+          },
+          "ruleId": "atomic-swap.incomplete-zenon-expectations",
+          "ruleIndex": 1
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Codex Security",
+          "rules": [
+            {
+              "fullDescription": {
+                "text": "Atomic swap: Funded contract replacement. Categories: Atomic swap. Weaknesses: CWE-841."
+              },
+              "help": {
+                "markdown": "Atomic swap: Funded contract replacement. Categories: Atomic swap. Weaknesses: CWE-841.\n\n## Remediation\n\nTreat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.",
+                "text": "Atomic swap: Funded contract replacement. Categories: Atomic swap. Weaknesses: CWE-841.\n\nRemediation:\n\nTreat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing."
+              },
+              "id": "atomic-swap.funded-contract-replacement",
+              "name": "Atomic swap: Funded contract replacement",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "atomic-swap",
+                  "external/cwe/cwe-841",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Atomic swap: Funded contract replacement"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Atomic swap: Incomplete zenon expectations. Categories: Atomic swap. Weaknesses: CWE-754."
+              },
+              "help": {
+                "markdown": "Atomic swap: Incomplete zenon expectations. Categories: Atomic swap. Weaknesses: CWE-754.\n\n## Remediation\n\nRequire a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.",
+                "text": "Atomic swap: Incomplete zenon expectations. Categories: Atomic swap. Weaknesses: CWE-754.\n\nRemediation:\n\nRequire a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock."
+              },
+              "id": "atomic-swap.incomplete-zenon-expectations",
+              "name": "Atomic swap: Incomplete zenon expectations",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "atomic-swap",
+                  "external/cwe/cwe-754",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Atomic swap: Incomplete zenon expectations"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Atomic swap: Insufficient bitcoin payment. Categories: Atomic swap. Weaknesses: CWE-841."
+              },
+              "help": {
+                "markdown": "Atomic swap: Insufficient bitcoin payment. Categories: Atomic swap. Weaknesses: CWE-841.\n\n## Remediation\n\nEnforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.",
+                "text": "Atomic swap: Insufficient bitcoin payment. Categories: Atomic swap. Weaknesses: CWE-841.\n\nRemediation:\n\nEnforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret."
+              },
+              "id": "atomic-swap.insufficient-bitcoin-payment",
+              "name": "Atomic swap: Insufficient bitcoin payment",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "atomic-swap",
+                  "external/cwe/cwe-841",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Atomic swap: Insufficient bitcoin payment"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Atomic swap: Nonminimal contract push. Categories: Atomic swap. Weaknesses: CWE-20."
+              },
+              "help": {
+                "markdown": "Atomic swap: Nonminimal contract push. Categories: Atomic swap. Weaknesses: CWE-20.\n\n## Remediation\n\nRebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.",
+                "text": "Atomic swap: Nonminimal contract push. Categories: Atomic swap. Weaknesses: CWE-20.\n\nRemediation:\n\nRebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags."
+              },
+              "id": "atomic-swap.nonminimal-contract-push",
+              "name": "Atomic swap: Nonminimal contract push",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "atomic-swap",
+                  "external/cwe/cwe-020",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Atomic swap: Nonminimal contract push"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Atomic swap: Unconfirmed bitcoin commitment. Categories: Atomic swap. Weaknesses: CWE-841."
+              },
+              "help": {
+                "markdown": "Atomic swap: Unconfirmed bitcoin commitment. Categories: Atomic swap. Weaknesses: CWE-841.\n\n## Remediation\n\nWhen Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.",
+                "text": "Atomic swap: Unconfirmed bitcoin commitment. Categories: Atomic swap. Weaknesses: CWE-841.\n\nRemediation:\n\nWhen Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds."
+              },
+              "id": "atomic-swap.unconfirmed-bitcoin-commitment",
+              "name": "Atomic swap: Unconfirmed bitcoin commitment",
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "atomic-swap",
+                  "external/cwe/cwe-841",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Atomic swap: Unconfirmed bitcoin commitment"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Command injection: Offer amount cli. Categories: Command injection. Weaknesses: CWE-78."
+              },
+              "help": {
+                "markdown": "Command injection: Offer amount cli. Categories: Command injection. Weaknesses: CWE-78.\n\n## Remediation\n\nValidate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.",
+                "text": "Command injection: Offer amount cli. Categories: Command injection. Weaknesses: CWE-78.\n\nRemediation:\n\nValidate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid."
+              },
+              "id": "command-injection.offer-amount-cli",
+              "name": "Command injection: Offer amount cli",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "command-injection",
+                  "external/cwe/cwe-078",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Command injection: Offer amount cli"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "Denial of service: Board inbox timestamp. Categories: Denial of service. Weaknesses: CWE-20, CWE-248."
+              },
+              "help": {
+                "markdown": "Denial of service: Board inbox timestamp. Categories: Denial of service. Weaknesses: CWE-20, CWE-248.\n\n## Remediation\n\nReject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls.",
+                "text": "Denial of service: Board inbox timestamp. Categories: Denial of service. Weaknesses: CWE-20, CWE-248.\n\nRemediation:\n\nReject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls."
+              },
+              "id": "denial-of-service.board-inbox-timestamp",
+              "name": "Denial of service: Board inbox timestamp",
+              "properties": {
+                "security-severity": "2.0",
+                "tags": [
+                  "denial-of-service",
+                  "external/cwe/cwe-020",
+                  "external/cwe/cwe-248",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Denial of service: Board inbox timestamp"
+              }
+            }
+          ],
+          "version": "0.1.24"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,1905 @@
+{
+  "documentType": "codex-security.findings",
+  "findings": [
+    {
+      "attackPath": {
+        "counterevidence": [
+          "The UI exposes fundingShort and displays a destructive badge.",
+          "Refresh keeps searching for a larger output while the contract is underfunded.",
+          "Auto Mode requires a confirmed funding output, and BuildRedeem rejects amounts too small to spend. Neither control requires the agreed amount."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "observed-underpayment",
+            "redeem-availability",
+            "automatic-redeem",
+            "redeem-broadcast"
+          ],
+          "outcome": "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment.",
+          "sink": "Bitcoin redeem broadcast containing the initiator's preimage",
+          "source": "attacker-selected Bitcoin output value",
+          "summary": "attacker-selected Bitcoin output value \u2192 Bitcoin redeem broadcast containing the initiator's preimage. The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment."
+        },
+        "evidenceRefs": [
+          "observed-underpayment",
+          "redeem-availability",
+          "automatic-redeem",
+          "redeem-broadcast"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment."
+        },
+        "likelihood": {
+          "level": "high",
+          "why": "A malicious trading counterparty controls its payment value; the normal Auto Mode path advances on a confirmed underpayment with no extra compromise required."
+        },
+        "reachability": {
+          "attacker": "A malicious Bitcoin participant trading with a Zenon initiator who has enabled Auto Mode.",
+          "entrypoint": "Underpayment becomes funded state",
+          "outcome": "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment.",
+          "summary": "A malicious trading counterparty controls its payment value; the normal Auto Mode path advances on a confirmed underpayment with no extra compromise required."
+        },
+        "summary": "The attacker funds the correct Bitcoin HTLC with a confirmed output substantially below AmountSats but large enough to cover its spend fee and dust limit. Refresh adopts that output as Funding and merely logs the shortfall. SwapCard.canRedeem checks for funding and a secret, and autoStep only adds a confirmation check. Manager.Redeem also omits the agreed-amount comparison, so Auto Mode signs and broadcasts a redeem that publishes the initiator's secret. The attacker can then unlock the full Zenon HTLC."
+      },
+      "codeEvidence": [
+        {
+          "code": "\tif fundingIsOpen(sw) {\n\t\tutxos, err := backend.AddressUTXOs(ctx, sw.ContractAddr)\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"look up contract address: %w\", err)\n\t\t}\n\t\tbest := pickFunding(utxos, sw.AmountSats)\n\t\tchanged := best != nil && (sw.Funding == nil || best.Value > sw.Funding.Value)\n\t\tif changed {\n\t\t\tif sw.Funding == nil {\n\t\t\t\tsw.State = StateFunded\n\t\t\t\tsw.log(\"funding seen: %s:%d for %d sat (confirmed=%v)\",\n\t\t\t\t\tbest.TxID, best.Vout, best.Value, best.Status.Confirmed)\n\t\t\t} else {\n\t\t\t\tsw.log(\"a larger output appeared at the contract address: switching funding from \"+\n\t\t\t\t\t\"%s:%d (%d sat) to %s:%d (%d sat) and re-signing the refund\",\n\t\t\t\t\tsw.Funding.TxID, sw.Funding.Vout, sw.Funding.Value,\n\t\t\t\t\tbest.TxID, best.Vout, best.Value)\n\t\t\t\tsw.RefundTx = nil // it spent the output we just stopped using\n\t\t\t}\n\t\t\tsw.Funding = &FundingOutput{\n\t\t\t\tTxID:  best.TxID,\n\t\t\t\tVout:  best.Vout,\n\t\t\t\tValue: best.Value,\n\t\t\t\t// The listing already carries the block, so the first depth is\n\t\t\t\t// free. Height alone is not depth -- that needs the tip, which\n\t\t\t\t// trackFundingDepth below fetches.\n\t\t\t\tConfirmed:   best.Status.Confirmed,\n\t\t\t\tBlockHeight: best.Status.BlockHeight,\n\t\t\t}\n\n\t\t\t// Only on a change: this block runs on every refresh while the\n\t\t\t// contract is short, and repeating these lines would bury the\n\t\t\t// event log in copies of themselves.\n\t\t\tif len(utxos) > 1 {\n\t\t\t\tsw.log(\"NOTE: the contract address holds %d unspent outputs. Only the one above is \"+\n\t\t\t\t\t\"spent by a redeem or refund; anything else must be recovered separately with \"+\n\t\t\t\t\t\"`ferry recover` after editing the funding outpoint.\", len(utxos))\n\t\t\t}\n\t\t\tif sw.Funding.Value < sw.AmountSats {\n\t\t\t\tsw.log(\"WARNING: contract holds %d sat but %d sat was agreed; do not proceed until \"+\n\t\t\t\t\t\"this is resolved\", sw.Funding.Value, sw.AmountSats)\n\t\t\t}",
+          "endLine": 574,
+          "explanation": "The peer chooses the output value; the selected short payment becomes `Funding` before its mismatch is merely logged.",
+          "id": "observed-underpayment",
+          "label": "Underpayment becomes funded state",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "user_input",
+          "startLine": 533
+        },
+        {
+          "code": "const canRedeem = computed(\n  () =>\n    props.swap.leg === 'receive' &&\n    Boolean(props.swap.funding) &&\n    Boolean(props.swap.secretHex) &&\n    props.swap.state !== 'redeemed',",
+          "endLine": 332,
+          "explanation": "The UI checks existence of funding and a secret, so the short-payment flag does not gate redeem.",
+          "id": "redeem-availability",
+          "label": "Any funding enables redeem",
+          "language": "typescript",
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "propagation",
+          "startLine": 327
+        },
+        {
+          "code": "  if (canRedeem.value && destForSpend.value && props.swap.funding?.confirmed) {\n    if (!autoMode.claim(props.swap.id, 'redeem')) return\n    await runAndTell('redeemed the Bitcoin contract, which publishes the preimage on Bitcoin', () =>\n      api.redeem(props.swap.id, destForSpend.value, settings.value),\n    )\n    if (error.value) autoMode.halt(props.swap.id, error.value)\n  }\n}",
+          "endLine": 744,
+          "explanation": "Confirmation is required, but the amount is not compared before `api.redeem()`.",
+          "id": "automatic-redeem",
+          "label": "Auto Mode dispatches after confirmation",
+          "language": "typescript",
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "entrypoint",
+          "startLine": 737
+        },
+        {
+          "code": "\t}\n\tif sw.Funding == nil {\n\t\treturn nil, errors.New(\"no funding output has been seen yet; refresh first\")\n\t}\n\tif len(sw.Secret) == 0 {\n\t\treturn nil, errors.New(\"the secret is not known yet, so this contract cannot be redeemed\")\n\t}\n\tdestAddr, err = payoutAddress(sw, destAddr)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif now := time.Now().Unix(); now >= sw.LockTime {\n\t\tsw.log(\"WARNING: redeeming after the timelock at %s. The counterparty can broadcast \"+\n\t\t\t\"their refund now, so this is a race -- if it loses, treat the Bitcoin leg as gone.\",\n\t\t\ttime.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))\n\t}\n\tparams, err := sw.Params()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tfeeRate, err := backend.FeeRate(ctx, 3)\n\tif err != nil {\n\t\tfeeRate = 2.0\n\t}\n\tspend, err := BuildRedeem(sw.Contract, *sw.Funding, sw.Key, sw.Secret, destAddr, feeRate, params)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\ttxid, err := backend.Broadcast(ctx, spend.RawHex)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"broadcast redeem: %w\", err)",
+          "endLine": 974,
+          "explanation": "The core accepts any existing funding and publishes a transaction carrying the secret.",
+          "id": "redeem-broadcast",
+          "label": "Core signs and broadcasts without amount check",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "root_control",
+          "startLine": 944
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_ce888e80f75eec0598f376d0",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:fe667d11977de7226d2348b10d6a99e2381716edff1b33153dcd8fc89111db25"
+      },
+      "identity": {
+        "anchor": "auto-mode-reveals-the-secret-for-an-underfunded-bitcoin-payment"
+      },
+      "locations": [
+        {
+          "endLine": 951,
+          "path": "wasm/manager.go",
+          "role": "root_control",
+          "startLine": 945
+        },
+        {
+          "endLine": 574,
+          "path": "wasm/manager.go",
+          "role": "user_input",
+          "startLine": 533
+        },
+        {
+          "endLine": 332,
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "propagation",
+          "startLine": 327
+        },
+        {
+          "endLine": 744,
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "entrypoint",
+          "startLine": 737
+        }
+      ],
+      "occurrenceId": "occ_cc1eb6ed33803a3fcec8c671",
+      "preventiveControls": [
+        "Own the first-secret-disclosure guard inside the Go engine, with fresh confirmed funding, minimum agreed value, contract binding, and safe time remaining."
+      ],
+      "provenance": {
+        "candidateId": "btc-underfunding",
+        "originalCandidates": [
+          {
+            "evidence": "Baseline source trace: wasm/manager.go:571-574 only warns underfunding; ui/src/components/SwapCard.vue:327-332 canRedeem and :737-740 autoStep ignore amount/fundingShort. Zenon initiator with full long HTLC can redeem a tiny confirmed BTC output, releasing secret for full ZNN.",
+            "severity": "high",
+            "source": "baseline",
+            "title": "Confirmed underfunding can reveal the initiator preimage"
+          },
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin participant trading with a Zenon initiator who has enabled Auto Mode.",
+            "confidence": "high",
+            "counterevidence": [
+              "The UI exposes fundingShort and displays a destructive badge.",
+              "Refresh keeps searching for a larger output while the contract is underfunded.",
+              "Auto Mode requires a confirmed funding output, and BuildRedeem rejects amounts too small to spend. Neither control requires the agreed amount."
+            ],
+            "exact_evidence": [
+              "Refresh sets sw.Funding from best.Value and StateFunded before checking the amount.",
+              "if sw.Funding.Value < sw.AmountSats { sw.log(\"WARNING: contract holds %d sat but %d sat was agreed; do not proceed until this is resolved\", ...) }",
+              "if (canRedeem.value && destForSpend.value && props.swap.funding?.confirmed) { ... api.redeem(...) }",
+              "Redeem passes *sw.Funding to BuildRedeem and broadcasts spend.RawHex without comparing Funding.Value with AmountSats."
+            ],
+            "impact": "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment.",
+            "invariant": "The initiator must not release the preimage until the participant has committed the agreed Bitcoin amount.",
+            "locations": [
+              {
+                "file": "wasm/manager.go",
+                "lines": "533-574"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "936-974"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "327-332"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "737-740"
+              }
+            ],
+            "remediation": "Enforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.",
+            "rule": "Enforce the agreed consideration before revealing an atomic-swap secret",
+            "severity": "high",
+            "source_to_sink": "The attacker funds the correct Bitcoin HTLC with a confirmed output substantially below AmountSats but large enough to cover its spend fee and dust limit. Refresh adopts that output as Funding and merely logs the shortfall. SwapCard.canRedeem checks for funding and a secret, and autoStep only adds a confirmation check. Manager.Redeem also omits the agreed-amount comparison, so Auto Mode signs and broadcasts a redeem that publishes the initiator's secret. The attacker can then unlock the full Zenon HTLC.",
+            "title": "Auto Mode reveals the swap secret for an underfunded Bitcoin payment"
+          },
+          {
+            "attacker": "A malicious participant supplying Bitcoin to a victim who initiated the swap by locking ZNN.",
+            "confidence": "high",
+            "counterevidence": "pickFunding prefers a covering output when available, but deliberately adopts the largest underpayment when none covers the amount. The warning does not gate signing. The parent verified SwapCard.canRedeem checks only leg, funding, secret and state; autoStep adds confirmation but no amount check. Manual redemption also lacks a confirmation guard. Redeem only logs a warning after expiry, creating an additional unsafe secret-disclosure case.",
+            "cwe": "CWE-841",
+            "impact": "Loss of the difference between the agreed exchange value and the attacker's arbitrarily small, spendable Bitcoin payment. The normal automatic redemption path is reachable with a confirmed underpayment according to the parent UI review.",
+            "invariant": "The initiator must disclose the secret only after the counterparty's Bitcoin output satisfies the agreed amount and confirmation requirements.",
+            "locations": [
+              {
+                "end_line": 556,
+                "path": "wasm/manager.go",
+                "snippet": "best := pickFunding(utxos, sw.AmountSats)\n...\nsw.State = StateFunded\n...\nsw.Funding = &FundingOutput{ ... Value: best.Value }",
+                "start_line": 538
+              },
+              {
+                "end_line": 573,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Funding.Value < sw.AmountSats {\n    sw.log(\"WARNING: contract holds %d sat but %d sat was agreed; do not proceed until this is resolved\", sw.Funding.Value, sw.AmountSats)\n}",
+                "start_line": 571
+              },
+              {
+                "end_line": 972,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Funding == nil { ... }\nif len(sw.Secret) == 0 { ... }\n...\nspend, err := BuildRedeem(sw.Contract, *sw.Funding, sw.Key, sw.Secret, destAddr, feeRate, params)\n...\ntxid, err := backend.Broadcast(ctx, spend.RawHex)",
+                "start_line": 945
+              }
+            ],
+            "remediation": "Add a central role-aware disclosure gate before BuildRedeem/Broadcast that requires freshly validated funding of at least AmountSats, adequate confirmations, an unspent matching outpoint, and sufficient remaining claim time whenever this is the initiator's first disclosure. Keep participant recovery paths possible when the secret is already public.",
+            "rule": "Validate counterparty funding immediately before secret disclosure",
+            "severity": "high",
+            "source_to_sink": "The counterparty pays a spendable amount smaller than AmountSats to the audited Bitcoin contract. Refresh adopts this output and sets StateFunded, merely logging the shortfall. Manager.Redeem checks only that Funding exists and the secret is present, then signs and broadcasts a transaction containing the secret. BuildRedeem verifies script satisfaction but knows no agreed amount. The attacker reads the preimage and claims all of the victim's ZNN while paying only the smaller Bitcoin amount.",
+            "title": "Require the full Bitcoin amount before revealing the initiator's preimage"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Enforce Funding.Value >= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.",
+      "remediationTests": [
+        "With Auto Mode on, a confirmed spendable underpayment must not produce a redeem or reveal the initiator's secret.",
+        "Check the same invariant through the direct WASM redeem API, including stale or replaced funding.",
+        "A fully funded, confirmed swap must still complete in both role/direction combinations; preserve explicit recovery when the secret is already public."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "observed-underpayment",
+          "redeem-availability",
+          "automatic-redeem",
+          "redeem-broadcast"
+        ],
+        "summary": "`Refresh()` reads the peer-funded contract's UTXOs and stores an underpayment as `Funding` and `StateFunded`; it only logs the mismatch with `AmountSats`. `canRedeem` treats any funding record as sufficient, and `autoStep()` adds confirmation but no amount check. `Manager.Redeem()` then signs and broadcasts with the secret without enforcing the agreed consideration."
+      },
+      "ruleId": "atomic-swap.insufficient-bitcoin-payment",
+      "severity": {
+        "level": "high",
+        "rationale": "High impact and high likelihood. A malicious trading counterparty controls its payment value; the normal Auto Mode path advances on a confirmed underpayment with no extra compromise required."
+      },
+      "summary": "A Bitcoin participant can pay less than the agreed amount and still make a Zenon initiator's Auto Mode redeem. The redeem publishes the secret, allowing the participant to take the full Zenon payment.",
+      "taxonomy": {
+        "category": "atomic-swap",
+        "cwe": [
+          "CWE-841"
+        ]
+      },
+      "title": "Auto Mode reveals the secret for an underfunded Bitcoin payment",
+      "validation": {
+        "assertions": [
+          "The initiator must not release the preimage until the participant has committed the agreed Bitcoin amount.",
+          "The victim receives a small Bitcoin payment while the attacker collects the full agreed Zenon payment."
+        ],
+        "counterevidence": [
+          "The UI exposes fundingShort and displays a destructive badge.",
+          "Refresh keeps searching for a larger output while the contract is underfunded.",
+          "Auto Mode requires a confirmed funding output, and BuildRedeem rejects amounts too small to spend. Neither control requires the agreed amount."
+        ],
+        "evidenceRefs": [
+          "observed-underpayment",
+          "redeem-availability",
+          "automatic-redeem",
+          "redeem-broadcast"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability."
+        ],
+        "method": "static source trace",
+        "summary": "The parent followed the selected UTXO through `Refresh()`, the automatic UI action, and `Manager.Redeem()` to `BuildRedeem()` and `Broadcast()`. A confirmed output below `AmountSats` but above the fee and dust floor reaches the secret-bearing transaction. The visible shortfall warning and continued search for a larger output do not stop this action."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "The wallet still requests the user's signature.",
+          "The funding depth badge identifies unconfirmed payments.",
+          "Auto Bitcoin redemption separately requires confirmation and documents the same double-spend attack; that protection is absent from Zenon creation."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "mempool-enables-panel",
+            "automatic-wallet-action",
+            "create-contract-only",
+            "create-wallet-plan"
+          ],
+          "outcome": "The attacker keeps its Bitcoin and collects the victim's Zenon payment.",
+          "sink": "wallet signing and publication of the participant's Zenon Create",
+          "source": "attacker-controlled unconfirmed Bitcoin HTLC output",
+          "summary": "attacker-controlled unconfirmed Bitcoin HTLC output \u2192 wallet signing and publication of the participant's Zenon Create. The attacker keeps its Bitcoin and collects the victim's Zenon payment."
+        },
+        "evidenceRefs": [
+          "mempool-enables-panel",
+          "automatic-wallet-action",
+          "create-contract-only",
+          "create-wallet-plan"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "The attacker keeps its Bitcoin and collects the victim's Zenon payment."
+        },
+        "likelihood": {
+          "level": "high",
+          "why": "Replacing one's own unconfirmed funding is within the malicious initiator's ordinary capability; the supported wallet flow exposes the unsafe next step without defeating authentication."
+        },
+        "reachability": {
+          "attacker": "A malicious Bitcoin initiator who controls the funding transaction and its replacement.",
+          "entrypoint": "Funding existence enables the Zenon leg",
+          "outcome": "The attacker keeps its Bitcoin and collects the victim's Zenon payment.",
+          "summary": "Replacing one's own unconfirmed funding is within the malicious initiator's ordinary capability; the supported wallet flow exposes the unsafe next step without defeating authentication."
+        },
+        "summary": "Refresh exposes an unconfirmed Bitcoin output as Funding. SwapCard opens the Zenon controls whenever Funding exists, expressly including a mempool payment. planCreate checks the audited contract and expiry ordering but never checks Funding or its confirmation state. ZenonWallet Auto Mode prepares the create and requests the user's ordinary wallet signature. After the victim locks Zenon, the attacker replaces the Bitcoin funding transaction and uses the secret it generated to unlock the victim's Zenon HTLC."
+      },
+      "codeEvidence": [
+        {
+          "code": "const zenonLegPossible = computed(\n  () =>\n    !props.swap.btcLegIsInitiators ||\n    Boolean(props.swap.funding) ||\n    Boolean(props.swap.zenon?.htlcId),\n)",
+          "endLine": 247,
+          "explanation": "The initiating Bitcoin leg needs a funding object, but `confirmed` is not checked.",
+          "id": "mempool-enables-panel",
+          "label": "Funding existence enables the Zenon leg",
+          "language": "typescript",
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "entrypoint",
+          "startLine": 242
+        },
+        {
+          "code": "async function autoRun() {\n  if (!props.auto || busy.value || walletSending.value || plan.value) return\n  // Connecting is left to the user, and deliberately. Syrius approves a site in\n  // a window of its own, and a page that asks for that on load \u2014 before anybody\n  // has touched it, possibly for several swaps at once \u2014 is a page that gets\n  // dismissed. Extensions tend to want a real gesture for it anyway. So Auto\n  // Mode drives the steps and the one connection stays a button; the card goes\n  // on offering it, and this picks up the moment it is done.\n  if (!walletConnected.value) return\n  if (!autoMode.claim(props.swap.id, `zenon:${props.action}`)) return\n  await prepare()\n  if (error.value || !plan.value) {\n    autoMode.halt(props.swap.id, error.value || `could not build the ${props.action} block`)\n    return\n  }\n  await sign()\n  if (error.value) autoMode.halt(props.swap.id, error.value)",
+          "endLine": 267,
+          "explanation": "Auto Mode progresses through the available action to prepare and sign.",
+          "id": "automatic-wallet-action",
+          "label": "Automatic wallet preparation and signing",
+          "language": "typescript",
+          "path": "ui/src/components/ZenonWallet.vue",
+          "role": "propagation",
+          "startLine": 251
+        },
+        {
+          "code": "\tif !sw.ZenonHtlcIsOurs() {\n\t\treturn errors.New(\"the counterparty sends ZNN on this swap, so they create the Zenon \" +\n\t\t\t\"HTLC. There is nothing for you to create\")\n\t}\n\tif sw.Zenon.HtlcID != \"\" {\n\t\treturn fmt.Errorf(\"this swap already has a Zenon HTLC (%s). Creating a second one would \"+\n\t\t\t\"lock a second lot of ZNN that only expiry can return\", sw.Zenon.HtlcID)\n\t}\n\t// The counterparty's Bitcoin contract is what the Zenon expiry has to be\n\t// ordered against, and it is also the thing that has to be audited before\n\t// any ZNN moves. Both are the same precondition.\n\tif len(sw.Contract) == 0 {\n\t\treturn errors.New(\"the Bitcoin contract has not been audited yet. Audit it first: the \" +\n\t\t\t\"Zenon expiry is computed from its locktime, and locking ZNN against a contract you \" +\n\t\t\t\"have not checked is the one move this app will not help you make\")\n\t}\n",
+          "endLine": 240,
+          "explanation": "The engine checks ownership and contract presence without establishing that the peer's Bitcoin is committed.",
+          "id": "create-contract-only",
+          "label": "Create requires a script but no safe funding",
+          "language": "go",
+          "path": "wasm/walletblock.go",
+          "role": "root_control",
+          "startLine": 224
+        },
+        {
+          "code": "\t}\n\tif amount.Sign() <= 0 {\n\t\treturn fmt.Errorf(\"the agreed amount %q is not a positive number\", sw.Zenon.AmountDisplay)\n\t}\n\n\t// hashType 1 is SHA-256, which is what Bitcoin's OP_SHA256 requires. The\n\t// other value the contract takes is SHA3, and an HTLC created with it is\n\t// one the Bitcoin side can never produce a matching preimage for.\n\tdata, err := znn.PackCreate(hashLocked, expiration, znn.HashTypeSHA256, SecretSize, sw.SecretHash)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// The counterparty will settle this leg by unlocking it, and the contract\n\t// pays hashLocked rather than the caller \u2014 which is what lets them do it\n\t// from a wallet with no HTLC support. Unless they have opted out of that,\n\t// in which case they need to unlock from the payee account itself, and it\n\t// is worth knowing now rather than at settlement.\n\tif allowed, perr := mgr.Znn.ProxyUnlockAllowed(ctx, peer); perr == nil && !allowed {\n\t\tplan.Warnings = append(plan.Warnings, fmt.Sprintf(\n\t\t\t\"%s has denied proxy unlock, so only that account itself can unlock this HTLC. \"+\n\t\t\t\t\"Make sure the counterparty can sign from it.\", peer))\n\t}\n\n\tb := plan.Block\n\tb.Amount = amount.String()\n\tb.TokenStandard = token\n\tb.Data = base64.StdEncoding.EncodeToString(data)\n\n\tplan.HashLocked = peer\n\tplan.ExpirationTime = expiration\n\tplan.ExpiresAt = utcTime(expiration)\n\tplan.AmountDisplay = sw.Zenon.AmountDisplay\n\tplan.TokenSymbol = tok.Symbol\n\tplan.Summary = fmt.Sprintf(\"Lock %s %s to %s until %s, redeemable with the preimage of %s.\",\n\t\tsw.Zenon.AmountDisplay, tok.Symbol, peer, plan.ExpiresAt,\n\t\thex.EncodeToString(sw.SecretHash))\n\treturn nil",
+          "endLine": 334,
+          "explanation": "The agreed Zenon amount is encoded into the Create plan after the missing Bitcoin guard.",
+          "id": "create-wallet-plan",
+          "label": "Build the funded Zenon account block",
+          "language": "go",
+          "path": "wasm/walletblock.go",
+          "role": "sink",
+          "startLine": 297
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_76b4938b8a19d6738fdc70fe",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:187394d9f9620b02b4143121c83620c014e0df4c7d85364c1989d01834993673"
+      },
+      "identity": {
+        "anchor": "zenon-funds-can-be-locked-against-replaceable-bitcoin-funding"
+      },
+      "locations": [
+        {
+          "endLine": 239,
+          "path": "wasm/walletblock.go",
+          "role": "root_control",
+          "startLine": 235
+        },
+        {
+          "endLine": 247,
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "entrypoint",
+          "startLine": 242
+        },
+        {
+          "endLine": 267,
+          "path": "ui/src/components/ZenonWallet.vue",
+          "role": "propagation",
+          "startLine": 251
+        },
+        {
+          "endLine": 334,
+          "path": "wasm/walletblock.go",
+          "role": "sink",
+          "startLine": 297
+        }
+      ],
+      "occurrenceId": "occ_aa3f8ceac42e81dcb30a1e5a",
+      "preventiveControls": [
+        "Require a current role-aware Bitcoin funding proof at the engine's counter-leg commitment boundary."
+      ],
+      "provenance": {
+        "candidateId": "btc-unconfirmed-create",
+        "originalCandidates": [
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin initiator who controls the funding transaction and its replacement.",
+            "confidence": "high",
+            "counterevidence": [
+              "The wallet still requests the user's signature.",
+              "The funding depth badge identifies unconfirmed payments.",
+              "Auto Bitcoin redemption separately requires confirmation and documents the same double-spend attack; that protection is absent from Zenon creation."
+            ],
+            "exact_evidence": [
+              "The funding gate's comment states that confirmed: false means a mempool payment and that the panel opens 'not once it is buried'.",
+              "zenonLegPossible is !props.swap.btcLegIsInitiators || Boolean(props.swap.funding) || Boolean(props.swap.zenon?.htlcId).",
+              "ZenonWallet receives :auto=\"autoOn\" and autoRun calls prepare(), then sign().",
+              "planCreate requires len(sw.Contract) != 0 but contains no Funding or confirmation validation."
+            ],
+            "impact": "The attacker keeps its Bitcoin and collects the victim's Zenon payment.",
+            "invariant": "The participant must not commit its Zenon payment while the initiating Bitcoin payment can be withdrawn by a routine double-spend.",
+            "locations": [
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "225-246"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "1295-1300"
+              },
+              {
+                "file": "ui/src/components/ZenonWallet.vue",
+                "lines": "251-266"
+              },
+              {
+                "file": "wasm/walletblock.go",
+                "lines": "220-335"
+              }
+            ],
+            "remediation": "When Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.",
+            "rule": "Require sufficiently confirmed initiating funding before committing the participant leg",
+            "severity": "high",
+            "source_to_sink": "Refresh exposes an unconfirmed Bitcoin output as Funding. SwapCard opens the Zenon controls whenever Funding exists, expressly including a mempool payment. planCreate checks the audited contract and expiry ordering but never checks Funding or its confirmation state. ZenonWallet Auto Mode prepares the create and requests the user's ordinary wallet signature. After the victim locks Zenon, the attacker replaces the Bitcoin funding transaction and uses the secret it generated to unlock the victim's Zenon HTLC.",
+            "title": "The Zenon participant locks funds against replaceable Bitcoin funding"
+          },
+          {
+            "attacker": "A malicious Bitcoin initiator who controls the inputs of the funding transaction and already knows the swap secret.",
+            "confidence": "high",
+            "counterevidence": "Wallet synchronization checks the Zenon account and whether the wallet and page see the same Zenon chain. It does not check Bitcoin funding. Timelock-order checks are present but cannot prevent a funding double-spend. The parent verified SwapCard.zenonLegPossible permits the unconfirmed-funding state and ZenonWallet adds no funding gate.",
+            "cwe": "CWE-841",
+            "impact": "The participant loses the ZNN leg without receiving the promised Bitcoin.",
+            "invariant": "The participant must establish durable, sufficient funding on the initiator's leg before committing their own funds.",
+            "locations": [
+              {
+                "end_line": 239,
+                "path": "wasm/walletblock.go",
+                "snippet": "if !sw.ZenonHtlcIsOurs() { ... }\nif sw.Zenon.HtlcID != \"\" { ... }\nif len(sw.Contract) == 0 { ... }",
+                "start_line": 224
+              },
+              {
+                "end_line": 324,
+                "path": "wasm/walletblock.go",
+                "snippet": "data, err := znn.PackCreate(hashLocked, expiration, znn.HashTypeSHA256, SecretSize, sw.SecretHash)\n...\nb.Amount = amount.String()\nb.TokenStandard = token\nb.Data = base64.StdEncoding.EncodeToString(data)",
+                "start_line": 305
+              },
+              {
+                "end_line": 560,
+                "path": "wasm/manager.go",
+                "snippet": "sw.Funding = &FundingOutput{\n    TxID: best.TxID, Vout: best.Vout, Value: best.Value,\n    Confirmed: best.Status.Confirmed,\n    BlockHeight: best.Status.BlockHeight,\n}",
+                "start_line": 552
+              }
+            ],
+            "remediation": "For RoleParticipant/LegReceive, refetch and validate the exact Bitcoin funding output, agreed amount and required confirmation depth before building htlc.Create and again before dispatch. Do not apply this prerequisite to the ZNN initiator, whose protocol role requires funding first.",
+            "rule": "Confirm the initiator's funding before funding the participant's leg",
+            "severity": "high",
+            "source_to_sink": "The attacker supplies a valid Bitcoin contract and broadcasts its funding transaction. Refresh records the unconfirmed output. planCreate checks contract presence and timelock ordering but never checks Funding, AmountSats or confirmations. The UI permits participant Zenon creation once the Bitcoin funding output is visible. Once the victim's ZNN HTLC is published, the attacker unlocks it using their already-known secret and replaces or double-spends the still-unconfirmed Bitcoin funding.",
+            "title": "Do not lock participant ZNN against unconfirmed Bitcoin funding"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "When Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.",
+      "remediationTests": [
+        "For Bitcoin-initiated swaps, reject Zenon Create with missing, unconfirmed, underfunded, spent, or mismatched Bitcoin funding.",
+        "Revalidate immediately before wallet dispatch and invalidate plans when funding changes.",
+        "Verify the Zenon-initiated ordering remains able to create its first leg without Bitcoin funding."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "mempool-enables-panel",
+          "automatic-wallet-action",
+          "create-contract-only",
+          "create-wallet-plan"
+        ],
+        "summary": "`zenonLegPossible` checks only the existence of a `Funding` record for Bitcoin-initiated swaps and explicitly accepts mempool funding. The resulting Zenon action reaches `planCreate()`, whose guard requires an audited script but never checks funding, confirmations, value, or whether the output remains unspent. Auto Mode can prepare and send that plan to the wallet."
+      },
+      "ruleId": "atomic-swap.unconfirmed-bitcoin-commitment",
+      "severity": {
+        "level": "high",
+        "rationale": "High impact and high likelihood. Replacing one's own unconfirmed funding is within the malicious initiator's ordinary capability; the supported wallet flow exposes the unsafe next step without defeating authentication."
+      },
+      "summary": "When Bitcoin initiates the swap, Ferry offers to lock the participant's Zenon funds as soon as an unconfirmed Bitcoin output appears. The initiator can replace that payment, then use the secret it already knows to collect the Zenon HTLC.",
+      "taxonomy": {
+        "category": "atomic-swap",
+        "cwe": [
+          "CWE-841"
+        ]
+      },
+      "title": "Zenon funds can be locked against replaceable Bitcoin funding",
+      "validation": {
+        "assertions": [
+          "The participant must not commit its Zenon payment while the initiating Bitcoin payment can be withdrawn by a routine double-spend.",
+          "The attacker keeps its Bitcoin and collects the victim's Zenon payment."
+        ],
+        "counterevidence": [
+          "The wallet still requests the user's signature.",
+          "The funding depth badge identifies unconfirmed payments.",
+          "Auto Bitcoin redemption separately requires confirmation and documents the same double-spend attack; that protection is absent from Zenon creation."
+        ],
+        "evidenceRefs": [
+          "mempool-enables-panel",
+          "automatic-wallet-action",
+          "create-contract-only",
+          "create-wallet-plan"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability."
+        ],
+        "method": "static source trace",
+        "summary": "The parent traced `zenonLegPossible` through the create action and `ZenonWallet.autoRun()` to `planCreate()`. All of `planCreate()` was inspected: address, token, positive amount, expiry ordering, and wallet-chain checks are present, but Bitcoin funding safety is absent. Existing devnet test setup also intentionally creates a participant HTLC with no funding; source evidence only, not an executed test."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "A supplied self address is validated and a mismatching HTLC recipient is rejected.",
+          "A wallet connected before form creation can prefill the field.",
+          "The attack requires the supported blank-address creation path; it does not bypass a correctly pinned recipient."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "optional-terms",
+            "recipient-expectation",
+            "amount-expectation",
+            "conditional-term-checks",
+            "verified-verdict",
+            "unlock-secret",
+            "empty-payee-wallet"
+          ],
+          "outcome": "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin.",
+          "sink": "verified status and secret-bearing Zenon Unlock",
+          "source": "peer-created Zenon HTLC with attacker-chosen recipient/amount, paired with locally omitted expected terms",
+          "summary": "peer-created Zenon HTLC with attacker-chosen recipient/amount, paired with locally omitted expected terms \u2192 verified status and secret-bearing Zenon Unlock. The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin."
+        },
+        "evidenceRefs": [
+          "optional-terms",
+          "recipient-expectation",
+          "amount-expectation",
+          "conditional-term-checks",
+          "verified-verdict",
+          "unlock-secret",
+          "empty-payee-wallet"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin."
+        },
+        "likelihood": {
+          "level": "high",
+          "why": "The normal creation form makes these fields optional. A trading counterparty can supply an otherwise matching HTLC without compromising the node; exploitation requires the victim to omit the expected recipient or amount."
+        },
+        "reachability": {
+          "attacker": "A malicious Zenon participant trading with a Bitcoin initiator whose swap was created without a Zenon self address.",
+          "entrypoint": "Empty Zenon addresses accepted",
+          "outcome": "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin.",
+          "summary": "The normal creation form makes these fields optional. A trading counterparty can supply an otherwise matching HTLC without compromising the node; exploitation requires the victim to omit the expected recipient or amount."
+        },
+        "summary": "Create permits a blank ZenonSelfAddress. For an incoming Zenon leg, zenonVerifyParams derives ExpectRecipient from that blank value. Client.Verify skips the recipient comparison when the expectation is empty, so an attacker-created HTLC with the correct token, amount, hash and expiry but an attacker-controlled hashLocked address verifies successfully. Connecting a wallet later does not repair this: checkWalletAgainstSwap returns immediately for unlock when self is blank. planUnlock then encodes the secret and requests publication, which pays the HTLC's attacker-controlled recipient."
+      },
+      "codeEvidence": [
+        {
+          "code": "\t// The three Zenon fields are all optional here -- the addresses are routinely\n\t// filled in later and a blank token means ZNN -- but a value that IS given has\n\t// to be the kind of thing the field asks for. A Bitcoin address, a Zenon\n\t// address and a Zenon token standard are all bech32, and the last two start\n\t// with the same letter, which is exactly the shape of accident a paste between\n\t// similar-looking fields produces.\n\tzenonSelf := strings.TrimSpace(p.ZenonSelfAddress)\n\tif zenonSelf != \"\" {\n\t\tif _, err := znn.ParseAddress(zenonSelf); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"your Zenon address: %w\", err)\n\t\t}\n\t}\n\tzenonPeer := strings.TrimSpace(p.ZenonPeerAddress)\n\tif zenonPeer != \"\" {\n\t\tif _, err := znn.ParseAddress(zenonPeer); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"their Zenon address: %w\", err)\n\t\t}\n\t}",
+          "endLine": 237,
+          "explanation": "Only nonempty addresses are parsed, allowing a draft with no own payout identity.",
+          "id": "optional-terms",
+          "label": "Empty Zenon addresses accepted",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "user_input",
+          "startLine": 220
+        },
+        {
+          "code": "\t// Checking \"recipient is me\" against an HTLC this user created themselves\n\t// would fail every time, and would skip the check that actually matters\n\t// there: that it pays the counterparty.\n\tif sw.ZenonHtlcIsOurs() {\n\t\twant.ExpectRecipient = sw.Zenon.PeerAddress\n\t\twant.ExpectSender = sw.Zenon.SelfAddress\n\t} else {\n\t\twant.ExpectRecipient = sw.Zenon.SelfAddress\n\t\twant.ExpectSender = sw.Zenon.PeerAddress",
+          "endLine": 1082,
+          "explanation": "For the incoming leg the blank own address becomes a blank expected recipient.",
+          "id": "recipient-expectation",
+          "label": "Copy optional address into verification",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 1074
+        },
+        {
+          "code": "\tif sw.Zenon.AmountDisplay != \"\" {\n\t\tagreed := sw.Zenon.AgreedToken()\n\t\tif tok, terr := m.Znn.GetToken(ctx, agreed); terr != nil {\n\t\t\twant.AmountUncheckable = fmt.Sprintf(\"could not read token %s from the node: %v\",\n\t\t\t\tagreed, terr)\n\t\t} else if amt, cerr := decimalToBaseUnits(sw.Zenon.AmountDisplay, tok.Decimals); cerr != nil {\n\t\t\twant.AmountUncheckable = fmt.Sprintf(\"the agreed amount %q could not be interpreted: %v\",\n\t\t\t\tsw.Zenon.AmountDisplay, cerr)\n\t\t} else {\n\t\t\twant.MinAmount = amt\n\t\t}\n\t}\n\treturn want\n}",
+          "endLine": 1133,
+          "explanation": "The minimum amount is computed only for nonempty agreed text.",
+          "id": "amount-expectation",
+          "label": "Blank amount leaves no lower bound",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 1120
+        },
+        {
+          "code": "\tif want.ExpectRecipient != \"\" && !strings.EqualFold(info.HashLocked, want.ExpectRecipient) {\n\t\tproblems = append(problems, fmt.Sprintf(\n\t\t\t\"hashLocked address is %s, expected %s\", info.HashLocked, want.ExpectRecipient))\n\t}\n\tif want.ExpectSender != \"\" && !strings.EqualFold(info.TimeLocked, want.ExpectSender) {\n\t\tproblems = append(problems, fmt.Sprintf(\n\t\t\t\"timeLocked address is %s, expected %s\", info.TimeLocked, want.ExpectSender))\n\t}\n\tif want.AmountUncheckable != \"\" {\n\t\tproblems = append(problems, fmt.Sprintf(\n\t\t\t\"the agreed amount could not be checked (%s). A skipped check reads exactly like a \"+\n\t\t\t\t\"passed one, so this is a refusal: fix the node or the agreed amount and verify again\",\n\t\t\twant.AmountUncheckable))\n\t\tincomplete++\n\t} else if want.MinAmount != nil {\n\t\tamt, ok := new(big.Int).SetString(info.Amount, 10)\n\t\tif !ok {\n\t\t\tproblems = append(problems, fmt.Sprintf(\"amount %q is not a number\", info.Amount))\n\t\t} else if amt.Cmp(want.MinAmount) < 0 {\n\t\t\tproblems = append(problems, fmt.Sprintf(\n\t\t\t\t\"amount %s is below the agreed %s\", amt.String(), want.MinAmount.String()))\n\t\t}\n\t}\n\tif want.Now > 0 && want.MinRemaining > 0 {",
+          "endLine": 473,
+          "explanation": "An empty expected payee or nil amount is treated as a disabled check rather than incomplete verification.",
+          "id": "conditional-term-checks",
+          "label": "Absent expectations skip comparisons",
+          "language": "go",
+          "path": "wasm/znn/client.go",
+          "role": "root_control",
+          "startLine": 450
+        },
+        {
+          "code": "\tsw.Zenon.VerifyPending = verr != nil && znn.CheckIncomplete(verr)\n\tif verr != nil {\n\t\tsw.Zenon.Verified = false\n\t\tsw.Zenon.VerifyError = verr.Error()\n\t\tif !repeat {\n\t\t\tsw.log(\"Zenon HTLC %s FAILED verification: %v\", htlcID, verr)\n\t\t}\n\t} else {\n\t\tsw.Zenon.Verified = true\n\t\tsw.Zenon.VerifyError = \"\"\n\t\tif !repeat {\n\t\t\tsw.log(\"Zenon HTLC %s verified: hashlock, parties, amount and expiry all match (it is the %s leg)\",\n\t\t\t\thtlcID, legOwner(sw.ZenonLegIsInitiators()))\n\t\t}\n\t}\n\tif err := m.Store.Save(sw); err != nil {\n\t\treturn nil, nil, err\n\t}\n\treturn sw, info, verr\n}",
+          "endLine": 1244,
+          "explanation": "If no other term fails, the swap receives a verified verdict despite the skipped terms.",
+          "id": "verified-verdict",
+          "label": "Persist successful verification",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "outcome",
+          "startLine": 1225
+        },
+        {
+          "code": "\t// Verification is not a formality here. Unlocking publishes the preimage,\n\t// which is the one secret that keeps both legs bound together \u2014 doing it\n\t// against an HTLC nobody has checked hands the counterparty the Bitcoin leg\n\t// for whatever the Zenon entry happens to contain.\n\tif !sw.Zenon.Verified {\n\t\treturn errors.New(\"this swap's Zenon HTLC has not passed verification. Unlocking \" +\n\t\t\t\"publishes the preimage, which is what lets the counterparty take your Bitcoin \u2014 so \" +\n\t\t\t\"check the HTLC really holds the agreed token, amount and expiry first\")\n\t}\n\tid, err := hex.DecodeString(htlcID)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"the stored HTLC id %q is not hex: %w\", htlcID, err)\n\t}\n\tdata, err := znn.PackUnlock(id, sw.Secret)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// The contract pays hashLocked \u2014 this user's own address \u2014 whoever makes\n\t// the call, which is what lets a wallet holding nothing settle this leg.\n\t// Whether that address still permits it, and what it means when the signer\n\t// is somebody else, is the sync gate's business; see walletsync.go.\n\tpayee := strings.TrimSpace(sw.Zenon.SelfAddress)\n\n\tplan.Block.Data = base64.StdEncoding.EncodeToString(data)\n\tplan.HtlcID = htlcID\n\tplan.Summary = fmt.Sprintf(\"Unlock HTLC %s with the preimage, paying its ZNN to %s. \"+\n\t\t\"This publishes the preimage on Zenon.\", htlcID, orElse(payee, \"the address in the entry\"))",
+          "endLine": 383,
+          "explanation": "The prior verdict authorizes `PackUnlock`; the summary even falls back to the entry's recipient when no own address is stored.",
+          "id": "unlock-secret",
+          "label": "Verified status permits preimage encoding",
+          "language": "go",
+          "path": "wasm/walletblock.go",
+          "role": "sink",
+          "startLine": 356
+        },
+        {
+          "code": "\t\t\t\t\"wrong account: this swap's Zenon leg belongs to %s and the wallet has %s \"+\n\t\t\t\t\t\"selected. Switch the account in the extension's settings, then reconnect\",\n\t\t\t\tself, out.Address))\n\t\t}\n\n\tcase \"unlock\":\n\t\t// An unlock may come from any account, because the contract pays the\n\t\t// address in the entry rather than the caller. Unless that address has\n\t\t// turned the behaviour off, in which case it is the only account that\n\t\t// can make the call at all.\n\t\tif self == \"\" || strings.EqualFold(self, out.Address) {\n\t\t\treturn\n\t\t}\n\t\tallowed, perr := mgr.Znn.ProxyUnlockAllowed(ctx, self)\n\t\tswitch {\n\t\tcase perr != nil:\n\t\t\tout.Unchecked = append(out.Unchecked, fmt.Sprintf(\n\t\t\t\t\"the wallet would sign from %s while the ZNN goes to %s, and whether that address \"+\n\t\t\t\t\t\"still permits being paid by another account could not be read from the node \"+",
+          "endLine": 301,
+          "explanation": "The empty-payee path returns without establishing that the HTLC pays this user.",
+          "id": "empty-payee-wallet",
+          "label": "Wallet sync does not repair missing recipient",
+          "language": "go",
+          "path": "wasm/walletsync.go",
+          "role": "propagation",
+          "startLine": 283
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_7d1966111fc33778db6991d3",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:ba82f8076dfcafd84ab4f1450bcded2018cf29be7a7d535049de2f21027c302b"
+      },
+      "identity": {
+        "anchor": "missing-zenon-terms-can-verify-an-htlc-that-pays-the-attacker"
+      },
+      "locations": [
+        {
+          "endLine": 453,
+          "path": "wasm/znn/client.go",
+          "role": "root_control",
+          "startLine": 450
+        },
+        {
+          "endLine": 237,
+          "path": "wasm/manager.go",
+          "role": "user_input",
+          "startLine": 220
+        },
+        {
+          "endLine": 1082,
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 1074
+        },
+        {
+          "endLine": 1133,
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 1120
+        },
+        {
+          "endLine": 1244,
+          "path": "wasm/manager.go",
+          "role": "outcome",
+          "startLine": 1225
+        },
+        {
+          "endLine": 383,
+          "path": "wasm/walletblock.go",
+          "role": "sink",
+          "startLine": 356
+        },
+        {
+          "endLine": 301,
+          "path": "wasm/walletsync.go",
+          "role": "propagation",
+          "startLine": 283
+        }
+      ],
+      "occurrenceId": "occ_ecf67f641f153f663172ec7c",
+      "preventiveControls": [
+        "Use an explicit complete agreed-terms type before verification; missing expectations must yield an incomplete verdict, never success."
+      ],
+      "provenance": {
+        "candidateId": "incomplete-zenon-terms",
+        "originalCandidates": [
+          {
+            "evidence": "Manager.Create permits empty ZenonSelfAddress/ZenonAmount; znn.Client.Verify skips ExpectRecipient/MinAmount checks when empty at client.go:450/464; VerifyZenon sets Verified. UI create checks BTC destination only.",
+            "source": "focused investigator"
+          },
+          {
+            "CWE": "CWE-754",
+            "attacker": "A malicious Zenon participant trading with a Bitcoin initiator whose swap was created without a Zenon self address.",
+            "confidence": "high",
+            "counterevidence": [
+              "A supplied self address is validated and a mismatching HTLC recipient is rejected.",
+              "A wallet connected before form creation can prefill the field.",
+              "The attack requires the supported blank-address creation path; it does not bypass a correctly pinned recipient."
+            ],
+            "exact_evidence": [
+              "Create documents the Zenon fields as optional and validates an address only when one was supplied.",
+              "want.ExpectRecipient = sw.Zenon.SelfAddress",
+              "if want.ExpectRecipient != \"\" && !strings.EqualFold(info.HashLocked, want.ExpectRecipient) { ... }",
+              "case \"unlock\": ... if self == \"\" || strings.EqualFold(self, out.Address) { return }",
+              "planUnlock calls znn.PackUnlock(id, sw.Secret); its summary substitutes 'the address in the entry' when payee is blank."
+            ],
+            "impact": "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin.",
+            "invariant": "A verified incoming Zenon HTLC must pay the victim's agreed address before the victim reveals the Bitcoin preimage.",
+            "locations": [
+              {
+                "file": "wasm/manager.go",
+                "lines": "220-236"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "1077-1082"
+              },
+              {
+                "file": "wasm/znn/client.go",
+                "lines": "450-453"
+              },
+              {
+                "file": "wasm/walletsync.go",
+                "lines": "288-295"
+              },
+              {
+                "file": "wasm/walletblock.go",
+                "lines": "356-383"
+              },
+              {
+                "file": "ui/src/pages/ActivePage.vue",
+                "lines": "429-453"
+              }
+            ],
+            "remediation": "Require a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.",
+            "rule": "Fail closed when the recipient expectation is absent",
+            "severity": "high",
+            "source_to_sink": "Create permits a blank ZenonSelfAddress. For an incoming Zenon leg, zenonVerifyParams derives ExpectRecipient from that blank value. Client.Verify skips the recipient comparison when the expectation is empty, so an attacker-created HTLC with the correct token, amount, hash and expiry but an attacker-controlled hashLocked address verifies successfully. Connecting a wallet later does not repair this: checkWalletAgainstSwap returns immediately for unlock when self is blank. planUnlock then encodes the secret and requests publication, which pays the HTLC's attacker-controlled recipient.",
+            "title": "Optional Zenon payout identity allows verification of an HTLC paying the attacker"
+          },
+          {
+            "attacker": "A malicious Zenon counterparty providing an HTLC ID to a Bitcoin sender whose swap was created without their own Zenon recipient address or an expected Zenon amount.",
+            "confidence": "high",
+            "counterevidence": "Nonempty malformed addresses are rejected, wrong nonempty expected recipients are rejected, and metadata lookup failures for a nonempty amount fail closed. Those protections do not cover omitted expectations. TestCreateValidatesZenonFields explicitly asserts that blank addresses are accepted. The parent verified the UI requires the Bitcoin destination but leaves Zenon self and amount optional.",
+            "cwe": "CWE-20",
+            "impact": "A counterparty can take the victim's Bitcoin without paying the victim any ZNN. Missing amount expectations independently permit underpayment to be labeled verified.",
+            "invariant": "Verification authorizing preimage disclosure must establish that the agreed token and amount pay the victim.",
+            "locations": [
+              {
+                "end_line": 1082,
+                "path": "wasm/manager.go",
+                "snippet": "want.ExpectRecipient = sw.Zenon.SelfAddress\nwant.ExpectSender = sw.Zenon.PeerAddress",
+                "start_line": 1080
+              },
+              {
+                "end_line": 1131,
+                "path": "wasm/manager.go",
+                "snippet": "if sw.Zenon.AmountDisplay != \"\" {\n    ...\n    want.MinAmount = amt\n}",
+                "start_line": 1120
+              },
+              {
+                "end_line": 470,
+                "path": "wasm/znn/client.go",
+                "snippet": "if want.ExpectRecipient != \"\" && !strings.EqualFold(info.HashLocked, want.ExpectRecipient) { ... }\n...\n} else if want.MinAmount != nil {\n    ...\n    } else if amt.Cmp(want.MinAmount) < 0 { ... }\n}",
+                "start_line": 450
+              },
+              {
+                "end_line": 1236,
+                "path": "wasm/manager.go",
+                "snippet": "sw.Zenon.Verified = true\nsw.Zenon.VerifyError = \"\"\n...\nsw.log(\"Zenon HTLC %s verified: hashlock, parties, amount and expiry all match ...\", ...)",
+                "start_line": 1233
+              },
+              {
+                "end_line": 294,
+                "path": "wasm/walletsync.go",
+                "snippet": "if self == \"\" || strings.EqualFold(self, out.Address) {\n    return\n}",
+                "start_line": 293
+              },
+              {
+                "end_line": 380,
+                "path": "wasm/walletblock.go",
+                "snippet": "if !sw.Zenon.Verified { ... }\n...\ndata, err := znn.PackUnlock(id, sw.Secret)\n...\nplan.Block.Data = base64.StdEncoding.EncodeToString(data)",
+                "start_line": 360
+              }
+            ],
+            "remediation": "Allow incomplete drafts if needed, but refuse a verified verdict and any funding or disclosure action until the mandatory recipient and positive expected amount are established. Verify the on-chain recipient against the user's explicitly selected receiving account; do not adopt the peer-controlled observed address as the expectation.",
+            "rule": "Do not treat omitted payment expectations as successful verification",
+            "severity": "high",
+            "source_to_sink": "Create accepts blank Zenon addresses and amount. For the BTC sender, zenonVerifyParams assigns the blank SelfAddress to ExpectRecipient; zenonExpectations leaves MinAmount nil when AmountDisplay is blank. Client.Verify skips those comparisons. VerifyZenon nevertheless persists Verified=true and says that parties and amount match. runWalletSync also permits an unlock when self is blank. planUnlock then encodes the secret into Unlock calldata. An HTLC naming the attacker's own address passes the omitted recipient check, so the victim's unlock returns the ZNN to the attacker and reveals the preimage needed to take the victim's Bitcoin.",
+            "title": "Refuse verified Zenon status when the expected recipient or amount is missing"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Require a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.",
+      "remediationTests": [
+        "An incoming HTLC must remain unverified when expected recipient or positive amount is absent, including manual and session discovery.",
+        "A matching token/hash/expiry with an attacker recipient must be refused before Unlock or first-secret disclosure.",
+        "Connecting a wallet after creation must not silently adopt an attacker-observed recipient as the agreed destination."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "optional-terms",
+          "recipient-expectation",
+          "amount-expectation",
+          "conditional-term-checks",
+          "verified-verdict",
+          "unlock-secret",
+          "empty-payee-wallet"
+        ],
+        "summary": "`Manager.Create()` accepts empty Zenon addresses and stores optional amount text. For an incoming HTLC, `zenonVerifyParams()` copies `SelfAddress` into `ExpectRecipient`; `VerifyHtlc()` runs that comparison only when nonempty. `zenonExpectations()` leaves `MinAmount` unset for a blank amount, which also disables comparison. `VerifyZenon()` can persist `Verified`, and `planUnlock()` relies on it to encode the preimage; the wallet sync path also returns without binding an empty payout address."
+      },
+      "ruleId": "atomic-swap.incomplete-zenon-expectations",
+      "severity": {
+        "level": "high",
+        "rationale": "High impact and high likelihood. The normal creation form makes these fields optional. A trading counterparty can supply an otherwise matching HTLC without compromising the node; exploitation requires the victim to omit the expected recipient or amount."
+      },
+      "summary": "Leaving the optional own Zenon address blank disables the recipient comparison. Ferry can mark an attacker-payable HTLC as verified and send an Unlock containing the victim's secret. A missing agreed amount similarly skips the amount comparison.",
+      "taxonomy": {
+        "category": "atomic-swap",
+        "cwe": [
+          "CWE-754"
+        ]
+      },
+      "title": "Missing Zenon terms can verify an HTLC that pays the attacker",
+      "validation": {
+        "assertions": [
+          "A verified incoming Zenon HTLC must pay the victim's agreed address before the victim reveals the Bitcoin preimage.",
+          "The attacker gets its own Zenon deposit back and learns the preimage needed to take the victim's Bitcoin."
+        ],
+        "counterevidence": [
+          "A supplied self address is validated and a mismatching HTLC recipient is rejected.",
+          "A wallet connected before form creation can prefill the field.",
+          "The attack requires the supported blank-address creation path; it does not bypass a correctly pinned recipient."
+        ],
+        "evidenceRefs": [
+          "optional-terms",
+          "recipient-expectation",
+          "amount-expectation",
+          "conditional-term-checks",
+          "verified-verdict",
+          "unlock-secret",
+          "empty-payee-wallet"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability."
+        ],
+        "method": "static source trace",
+        "summary": "The parent followed optional input through the stored expectations to both conditional checks and the persisted verdict, then to `PackUnlock()`. With the correct hash, token and expiry but `hashLocked` set to the attacker's address, an empty expected recipient does not produce a problem. The configured-address and amount-conversion checks protect populated fields but do not close the absent-field path."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "Malformed, truncated, extended and wrong-sized templates are rejected.",
+          "Contracts generated by BuildContract use canonical ScriptBuilder encodings.",
+          "Bitcoin consensus may permit a specially mined nonstandard redeem, but Ferry refuses to construct it and normal relay policy is the operational path."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "token-opcode-check",
+            "dynamic-push-length",
+            "audited-terms",
+            "minimality-spend-check"
+          ],
+          "outcome": "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin.",
+          "sink": "accepted contract followed by a locally rejected Bitcoin redeem",
+          "source": "counterparty-supplied raw Bitcoin contract hex",
+          "summary": "counterparty-supplied raw Bitcoin contract hex \u2192 accepted contract followed by a locally rejected Bitcoin redeem. The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin."
+        },
+        "evidenceRefs": [
+          "token-opcode-check",
+          "dynamic-push-length",
+          "audited-terms",
+          "minimality-spend-check"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin."
+        },
+        "likelihood": {
+          "level": "high",
+          "why": "The initiator supplies the contract through the normal manual or session handoff, and the malformed representation preserves the expected keys, hash and timelock."
+        },
+        "limitations": [
+          "The demonstrated claim is failure of Ferry's normal redeem and standard relay policy, not absolute Bitcoin consensus unspendability; a specially constructed nonstandard spend mined outside ordinary relay may be possible."
+        ],
+        "reachability": {
+          "attacker": "A malicious Bitcoin initiator supplying the redeem script that a Zenon participant audits.",
+          "entrypoint": "Only fixed template opcodes are compared",
+          "outcome": "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin.",
+          "summary": "The initiator supplies the contract through the normal manual or session handoff, and the malformed representation preserves the expected keys, hash and timelock."
+        },
+        "summary": "ParseContract validates fixed opcode positions and the lengths of pushed data, but not the push opcodes at the dynamic positions. The attacker can replace the direct 32-byte secret-hash push in the OP_IF branch with OP_PUSHDATA1 followed by length 32 and the same hash. The parser still returns the expected hash, recipient and locktime, so AuditContract accepts it and the victim can lock Zenon. After the attacker unlocks Zenon, the victim's BuildRedeem fails local execution under StandardVerifyFlags because that branch executes a nonminimal data push. The attacker's refund branch skips the offending OP_IF push."
+      },
+      "codeEvidence": [
+        {
+          "code": "\tfor tk.Next() {\n\t\tif len(tokens) == contractTemplateLen {\n\t\t\treturn nil, errors.New(\"script is longer than the atomic swap template\")\n\t\t}\n\t\ttokens = append(tokens, scriptToken{op: tk.Opcode(), data: tk.Data()})\n\t}\n\tif err := tk.Err(); err != nil {\n\t\treturn nil, fmt.Errorf(\"malformed script: %w\", err)\n\t}\n\tif len(tokens) != contractTemplateLen {\n\t\treturn nil, fmt.Errorf(\"script has %d elements, the atomic swap template has %d\",\n\t\t\tlen(tokens), contractTemplateLen)\n\t}\n\tfor idx, op := range contractTemplate {\n\t\tif tokens[idx].op != op {\n\t\t\treturn nil, fmt.Errorf(\"script does not match the atomic swap template at element %d\", idx)\n\t\t}\n\t}\n\n\tsecretSize, err := scriptNum(tokens[2], maxScriptNumLen)\n\tif err != nil {",
+          "endLine": 168,
+          "explanation": "Raw peer bytes are tokenized, but dynamic push opcodes are outside the fixed opcode checks.",
+          "id": "token-opcode-check",
+          "label": "Only fixed template opcodes are compared",
+          "language": "go",
+          "path": "wasm/htlc.go",
+          "role": "entrypoint",
+          "startLine": 148
+        },
+        {
+          "code": "\t}\n\tpkhRedeem := tokens[9].data\n\tif len(pkhRedeem) != 20 {\n\t\treturn nil, errors.New(\"redeem pubkey hash is not 20 bytes\")\n\t}\n\tlocktime, err := scriptNum(tokens[11], maxCLTVScriptNumLen)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"bad locktime: %w\", err)\n\t}\n\t// A contract whose locktime is not a timestamp is not one this tool can\n\t// reason about: every deadline it reports, and the refund it pre-signs,\n\t// assume the refund branch opens at a wall-clock moment.\n\tif err := validLockTime(locktime); err != nil {\n\t\treturn nil, fmt.Errorf(\"contract %w\", err)\n\t}\n\tpkhRefund := tokens[16].data\n\tif len(pkhRefund) != 20 {\n\t\treturn nil, errors.New(\"refund pubkey hash is not 20 bytes\")\n\t}\n\n\treturn &ContractDetails{",
+          "endLine": 199,
+          "explanation": "A nonminimal push preserves the expected hash and pubkey payload lengths and therefore survives parsing.",
+          "id": "dynamic-push-length",
+          "label": "Dynamic pushes are validated by payload",
+          "language": "go",
+          "path": "wasm/htlc.go",
+          "role": "root_control",
+          "startLine": 179
+        },
+        {
+          "code": "\tdetails, err := ParseContract(contract)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tparams, err := sw.Params()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif !bytes.Equal(details.PkhRedeem, sw.Key.PKH) {\n\t\treturn nil, fmt.Errorf(\"contract lets %s redeem, not this swap's key %s: \"+\n\t\t\t\"you would not be able to claim these funds\",\n\t\t\thex.EncodeToString(details.PkhRedeem), sw.Key.PKHHex())\n\t}\n\tif len(sw.SecretHash) > 0 && !bytes.Equal(details.SecretHash, sw.SecretHash) {\n\t\treturn nil, fmt.Errorf(\"contract commits to secret hash %s, this swap uses %s\",\n\t\t\thex.EncodeToString(details.SecretHash), hex.EncodeToString(sw.SecretHash))\n\t}\n\tif len(sw.SecretHash) == 0 {",
+          "endLine": 421,
+          "explanation": "Audit checks parsed identity and hash, so the alternate encoding can satisfy those checks.",
+          "id": "audited-terms",
+          "label": "Parsed contract accepted under the agreed keys",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 403
+        },
+        {
+          "code": "\t// Execute the script locally before handing the transaction to anyone.\n\t// A swap failing at broadcast time is recoverable; one that fails silently\n\t// is not.\n\tengine, err := txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags,\n\t\ttxscript.NewSigCache(10), txscript.NewTxSigHashes(tx, prevoutFetcher(contractPkScript, funding.Value)),\n\t\tfunding.Value, prevoutFetcher(contractPkScript, funding.Value))\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"script engine: %w\", err)\n\t}\n\tif err := engine.Execute(); err != nil {\n\t\treturn nil, fmt.Errorf(\"built transaction does not satisfy the contract: %w\", err)\n\t}",
+          "endLine": 204,
+          "explanation": "Ferry rejects the spend when the nonminimal instruction is executed, after the peer may have committed its other leg.",
+          "id": "minimality-spend-check",
+          "label": "Redeem executes with standard flags",
+          "language": "go",
+          "path": "wasm/txbuild.go",
+          "role": "sink",
+          "startLine": 193
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_e23fbf39e7af8d30856cf5e6",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:a71285dac473f06a8e94861209ff2fc21f0c7c8440192e03f9ebbbd49984278d"
+      },
+      "identity": {
+        "anchor": "contract-audit-accepts-a-script-that-blocks-the-victim-s-redeem-branch"
+      },
+      "locations": [
+        {
+          "endLine": 182,
+          "path": "wasm/htlc.go",
+          "role": "root_control",
+          "startLine": 179
+        },
+        {
+          "endLine": 168,
+          "path": "wasm/htlc.go",
+          "role": "entrypoint",
+          "startLine": 148
+        },
+        {
+          "endLine": 421,
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 403
+        },
+        {
+          "endLine": 204,
+          "path": "wasm/txbuild.go",
+          "role": "sink",
+          "startLine": 193
+        }
+      ],
+      "occurrenceId": "occ_682e4961f98cdd116324d42f",
+      "preventiveControls": [
+        "Make the accepted contract representation canonical at the initial audit boundary and share it with the spend builder."
+      ],
+      "provenance": {
+        "candidateId": "nonminimal-contract-push",
+        "originalCandidates": [
+          {
+            "evidence": "ParseContract accepts nonminimal OP_PUSHDATA1 hash pushes; BuildRedeem txbuild.go:196 StandardVerifyFlags rejects redeem branch while refund branch can remain relayable. Attacker supplies P2SH contract, victim locks ZNN after audit, attacker redeems ZNN and refunds BTC.",
+            "source": "baseline"
+          },
+          {
+            "CWE": "CWE-20",
+            "attacker": "A malicious Bitcoin initiator supplying the redeem script that a Zenon participant audits.",
+            "confidence": "high",
+            "counterevidence": [
+              "Malformed, truncated, extended and wrong-sized templates are rejected.",
+              "Contracts generated by BuildContract use canonical ScriptBuilder encodings.",
+              "Bitcoin consensus may permit a specially mined nonstandard redeem, but Ferry refuses to construct it and normal relay policy is the operational path."
+            ],
+            "exact_evidence": [
+              "ParseContract retains both op and data for each token but checks template opcodes only at fixed positions.",
+              "secretHash := tokens[5].data; if len(secretHash) != sha256.Size { ... }",
+              "The dynamic hash and public-key-hash positions are accepted on data length without requiring OP_DATA_32 or OP_DATA_20.",
+              "txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags, ...)",
+              "engine.Execute() errors are returned before broadcasting."
+            ],
+            "impact": "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin.",
+            "invariant": "An accepted contract must permit the victim to execute the redeem branch under the transaction policy Ferry itself enforces.",
+            "locations": [
+              {
+                "file": "wasm/htlc.go",
+                "lines": "145-205"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "403-445"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "193-204"
+              }
+            ],
+            "remediation": "Rebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.",
+            "rule": "Validate the exact executable contract accepted by the spending policy",
+            "severity": "high",
+            "source_to_sink": "ParseContract validates fixed opcode positions and the lengths of pushed data, but not the push opcodes at the dynamic positions. The attacker can replace the direct 32-byte secret-hash push in the OP_IF branch with OP_PUSHDATA1 followed by length 32 and the same hash. The parser still returns the expected hash, recipient and locktime, so AuditContract accepts it and the victim can lock Zenon. After the attacker unlocks Zenon, the victim's BuildRedeem fails local execution under StandardVerifyFlags because that branch executes a nonminimal data push. The attacker's refund branch skips the offending OP_IF push.",
+            "title": "Contract audit accepts nonminimal pushes that prevent the victim's redeem branch"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Rebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.",
+      "remediationTests": [
+        "Reject nonminimal OP_PUSHDATA1/2/4 encodings at every dynamic contract position during audit.",
+        "Require audited scripts to equal the canonical rebuild and verify both branch spends under the same flags used by the signer.",
+        "Ensure a rejected contract cannot enable Zenon Create or replace a previously accepted contract."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "token-opcode-check",
+          "dynamic-push-length",
+          "audited-terms",
+          "minimality-spend-check"
+        ],
+        "summary": "`ParseContract()` records each token's opcode and data but compares opcodes only at fixed template positions. Dynamic hash and pubkey pushes are accepted based on their decoded length, and numeric values are checked separately without requiring canonical push opcodes. `AuditContract()` accepts those parsed terms. Later `BuildRedeem()` runs the script with `StandardVerifyFlags`, which enforces minimal pushes in the executing branch."
+      },
+      "ruleId": "atomic-swap.nonminimal-contract-push",
+      "severity": {
+        "level": "high",
+        "rationale": "High impact and high likelihood. The initiator supplies the contract through the normal manual or session handoff, and the malformed representation preserves the expected keys, hash and timelock."
+      },
+      "summary": "A Bitcoin initiator can send a nonminimal push encoding that passes Ferry's contract audit but fails its later redeem validation. The Zenon participant may commit funds to the matching HTLC while its normal Bitcoin claim is unusable; the attacker can still use the refund branch.",
+      "taxonomy": {
+        "category": "atomic-swap",
+        "cwe": [
+          "CWE-20"
+        ]
+      },
+      "title": "Contract audit accepts a script that blocks the victim's redeem branch",
+      "validation": {
+        "assertions": [
+          "An accepted contract must permit the victim to execute the redeem branch under the transaction policy Ferry itself enforces.",
+          "The victim's Bitcoin claim is blocked by Ferry and standard transaction policy while the attacker can claim Zenon and later refund the Bitcoin."
+        ],
+        "counterevidence": [
+          "Malformed, truncated, extended and wrong-sized templates are rejected.",
+          "Contracts generated by BuildContract use canonical ScriptBuilder encodings.",
+          "Bitcoin consensus may permit a specially mined nonstandard redeem, but Ferry refuses to construct it and normal relay policy is the operational path."
+        ],
+        "evidenceRefs": [
+          "token-opcode-check",
+          "dynamic-push-length",
+          "audited-terms",
+          "minimality-spend-check"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.",
+          "The demonstrated claim is failure of Ferry's normal redeem and standard relay policy, not absolute Bitcoin consensus unspendability; a specially constructed nonstandard spend mined outside ordinary relay may be possible."
+        ],
+        "method": "static source trace",
+        "summary": "The parent checked the exact parser and audit path and the pinned btcd v0.24.2 script engine in the local module cache. Replacing the direct 32-byte secret-hash push with `OP_PUSHDATA1 0x20` preserves the decoded tokens accepted by Ferry. The redeem branch executes this nonminimal push and fails `ScriptVerifyMinimalData`; the refund branch skips it. A prepared isolated regression did not run because required dependency versions were unavailable offline."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "The replacement must preserve the victim's redeem key and secret hash and pass timing checks.",
+          "A previously saved recovery file containing contract A can enable manual recovery.",
+          "The attacker does not acquire the victim's private key; exploitation relies on blocking the normal claim path until the refund deadline."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "session-contract",
+            "contract-overwrite",
+            "assumed-prevout",
+            "local-validation"
+          ],
+          "outcome": "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline.",
+          "sink": "redeem of the old funding outpoint using the new contract",
+          "source": "a validly authenticated peer's replacement contract message",
+          "summary": "a validly authenticated peer's replacement contract message \u2192 redeem of the old funding outpoint using the new contract. Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline."
+        },
+        "evidenceRefs": [
+          "session-contract",
+          "contract-overwrite",
+          "assumed-prevout",
+          "local-validation"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "The attack needs an established session, funded first contract, a second commitment and a timed replacement. Recovery using the original script may defeat the attempted loss."
+        },
+        "limitations": [
+          "Loss is conditional on the victim failing to restore the original script before the attacker can refund. Old recovery files or a retained transcript may permit recovery; this is not unconditional theft."
+        ],
+        "reachability": {
+          "attacker": "A malicious Bitcoin initiator connected to the victim's swap session.",
+          "entrypoint": "Peer messages automatically invoke audit",
+          "outcome": "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline.",
+          "summary": "The attack needs an established session, funded first contract, a second commitment and a timed replacement. Recovery using the original script may defeat the attempted loss."
+        },
+        "summary": "Incoming session contract messages automatically call api.audit. AuditContract accepts a new script whenever its redeem key, secret hash and timing checks pass, including after funding and Zenon commitment. It overwrites Contract, ContractAddr and CounterpartyPKH without clearing or rebinding Funding. The attacker can fund contract A, wait for the victim to lock Zenon, then send contract B with the same hash, victim redeem key and locktime but a different refund key. After the attacker unlocks Zenon, the victim builds a B-script spend of A's funding output. Local validation constructs its supposed previous-output script from B rather than reading A's actual script, so the network rejects the transaction. The attacker can later refund A."
+      },
+      "codeEvidence": [
+        {
+          "code": "      // board's own `pendingTrade` is.\n      peerAddresses.value = {\n        btc: (msg.btcAddr ?? '').trim(),\n        znn: (msg.zenonAddr ?? '').trim(),\n      }\n      say('in', 'They sent where to pay them \u2014 it is filled into the new-swap form.')\n      break\n    case 'pkh':\n      await applyValue(`their pubkey hash ${short(msg.pkhHex)}`, () =>\n        api.counterparty(swapId.value, msg.pkhHex ?? ''),\n      )\n      break\n    case 'contract':\n      await applyValue(`their contract ${short(msg.contractHex)}`, () =>\n        api.audit(swapId.value, msg.contractHex ?? ''),\n      )\n      break\n    case 'zenon':\n      await applyValue(`their Zenon HTLC ${short(msg.htlcId)}`, async () => {",
+          "endLine": 630,
+          "explanation": "An authenticated counterparty can resend contract messages; the handler applies the returned swap.",
+          "id": "session-contract",
+          "label": "Peer messages automatically invoke audit",
+          "language": "typescript",
+          "path": "ui/src/core/composables/useSession.ts",
+          "role": "entrypoint",
+          "startLine": 612
+        },
+        {
+          "code": "\tremaining := time.Until(time.Unix(details.LockTime, 0))\n\tif err := auditLegOrdering(sw, details.LockTime, remaining); err != nil {\n\t\treturn nil, err\n\t}\n\n\taddr, err := ContractAddress(contract, params)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tsw.Contract = contract\n\tsw.ContractAddr = addr.String()\n\tsw.LockTime = details.LockTime\n\tsw.CounterpartyPKH = details.PkhRefund\n\tif sw.State == StateDraft {\n\t\tsw.State = StateAwaitingFunding\n\t}\n\tplanZenonLeg(sw, time.Now().UTC())\n\tsw.log(\"audited counterparty contract %s: redeemable by our key, locktime %s (%s away), \"+\n\t\t\"which is the %s leg\",\n\t\tsw.ContractAddr, time.Unix(details.LockTime, 0).UTC().Format(time.RFC3339),\n\t\tremaining.Truncate(time.Minute), legOwner(sw.BitcoinLegIsInitiators()))\n\tif sw.ZenonHtlcIsOurs() && sw.Zenon.ExpirationSeconds > 0 && sw.Zenon.HtlcID == \"\" {\n\t\tsw.log(\"create your Zenon HTLC with an expiry of %ds (%dh) so it lands on the correct \"+\n\t\t\t\"side of this contract's locktime\",\n\t\t\tsw.Zenon.ExpirationSeconds, sw.Zenon.ExpirationHours)\n\t}",
+          "endLine": 454,
+          "explanation": "The new valid script is stored without checking commitment state or rebinding the existing outpoint.",
+          "id": "contract-overwrite",
+          "label": "Overwrite contract without funding guard",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "root_control",
+          "startLine": 429
+        },
+        {
+          "code": "\tfundingHash, err := chainhash.NewHashFromStr(funding.TxID)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"bad funding txid: %w\", err)\n\t}\n\tcontractPkScript, err := contractPkScript(contract, params)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tnewTx := func() *wire.MsgTx {\n\t\ttx := wire.NewMsgTx(txVersion)\n\t\ttx.LockTime = uint32(locktime)\n\t\ttxIn := wire.NewTxIn(&wire.OutPoint{Hash: *fundingHash, Index: funding.Vout}, nil, nil)\n\t\t// CHECKLOCKTIMEVERIFY is only enforced when the input's sequence is not\n\t\t// final, so the refund path must not use the default 0xffffffff. Using\n\t\t// 0 for both paths keeps the two transactions the same size.",
+          "endLine": 160,
+          "explanation": "The signer pairs the existing outpoint with a script inferred from the replacement contract.",
+          "id": "assumed-prevout",
+          "label": "Derive prevout script from mutable contract",
+          "language": "go",
+          "path": "wasm/txbuild.go",
+          "role": "propagation",
+          "startLine": 145
+        },
+        {
+          "code": "\t// Execute the script locally before handing the transaction to anyone.\n\t// A swap failing at broadcast time is recoverable; one that fails silently\n\t// is not.\n\tengine, err := txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags,\n\t\ttxscript.NewSigCache(10), txscript.NewTxSigHashes(tx, prevoutFetcher(contractPkScript, funding.Value)),\n\t\tfunding.Value, prevoutFetcher(contractPkScript, funding.Value))\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"script engine: %w\", err)\n\t}\n\tif err := engine.Execute(); err != nil {\n\t\treturn nil, fmt.Errorf(\"built transaction does not satisfy the contract: %w\", err)\n\t}",
+          "endLine": 204,
+          "explanation": "The local engine validates the replacement rather than the real previous output, leaving rejection to the chain.",
+          "id": "local-validation",
+          "label": "Validate against the assumed script",
+          "language": "go",
+          "path": "wasm/txbuild.go",
+          "role": "sink",
+          "startLine": 193
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_cbfdd0239239945ca02a5c31",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:234fec943bcfae8dbdf80c1aaf9cd70d140b6b2075adb797b3c27652295c63ce"
+      },
+      "identity": {
+        "anchor": "a-session-peer-can-replace-the-script-of-an-already-funded-swap"
+      },
+      "locations": [
+        {
+          "endLine": 441,
+          "path": "wasm/manager.go",
+          "role": "root_control",
+          "startLine": 438
+        },
+        {
+          "endLine": 630,
+          "path": "ui/src/core/composables/useSession.ts",
+          "role": "entrypoint",
+          "startLine": 612
+        },
+        {
+          "endLine": 160,
+          "path": "wasm/txbuild.go",
+          "role": "propagation",
+          "startLine": 145
+        },
+        {
+          "endLine": 204,
+          "path": "wasm/txbuild.go",
+          "role": "sink",
+          "startLine": 193
+        }
+      ],
+      "occurrenceId": "occ_b63511994b830e71124c1a44",
+      "preventiveControls": [
+        "Freeze the exact contract bytes and expected terms at commitment; treat identical session resends as idempotent."
+      ],
+      "provenance": {
+        "candidateId": "contract-replacement",
+        "originalCandidates": [
+          {
+            "evidence": "Session useSession.ts:624-627 automatically applies contract. AuditContract manager.go:438-442 replaces contract/address/locktime/refund PKH leaving Funding and verified Zenon. Can sever funding-to-script binding and deny redeem after peer unlocks ZNN.",
+            "source": "baseline and focused investigator"
+          },
+          {
+            "CWE": "CWE-841",
+            "attacker": "A malicious Bitcoin initiator connected to the victim's swap session.",
+            "confidence": "high",
+            "counterevidence": [
+              "The replacement must preserve the victim's redeem key and secret hash and pass timing checks.",
+              "A previously saved recovery file containing contract A can enable manual recovery.",
+              "The attacker does not acquire the victim's private key; exploitation relies on blocking the normal claim path until the refund deadline."
+            ],
+            "exact_evidence": [
+              "case 'contract': await applyValue(..., () => api.audit(swapId.value, msg.contractHex ?? ''))",
+              "sw.Contract = contract; sw.ContractAddr = addr.String(); sw.LockTime = details.LockTime; sw.CounterpartyPKH = details.PkhRefund",
+              "AuditContract has no existing-contract equality check or funding/Zenon-commitment mutation guard.",
+              "contractPkScript is derived from the current contract while the input uses the retained funding.TxID and funding.Vout."
+            ],
+            "impact": "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline.",
+            "invariant": "Once funds are committed, peer messages must not replace the script associated with the recorded funding outpoint.",
+            "locations": [
+              {
+                "file": "ui/src/core/composables/useSession.ts",
+                "lines": "624-627"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "388-459"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "438-441"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "145-163"
+              },
+              {
+                "file": "wasm/txbuild.go",
+                "lines": "196-198"
+              }
+            ],
+            "remediation": "Treat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.",
+            "rule": "Freeze committed contract identity and bind funding to the actual previous output",
+            "severity": "high",
+            "source_to_sink": "Incoming session contract messages automatically call api.audit. AuditContract accepts a new script whenever its redeem key, secret hash and timing checks pass, including after funding and Zenon commitment. It overwrites Contract, ContractAddr and CounterpartyPKH without clearing or rebinding Funding. The attacker can fund contract A, wait for the victim to lock Zenon, then send contract B with the same hash, victim redeem key and locktime but a different refund key. After the attacker unlocks Zenon, the victim builds a B-script spend of A's funding output. Local validation constructs its supposed previous-output script from B rather than reading A's actual script, so the network rejects the transaction. The attacker can later refund A.",
+            "title": "A session peer can replace an already-funded contract while preserving its funding record"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Treat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.",
+      "remediationTests": [
+        "Once either leg is committed, reject a different contract while permitting byte-identical retransmissions.",
+        "Check that rejected re-audit leaves contract, funding, HTLC verification and refund artifacts unchanged.",
+        "Before signing, compare the actual referenced funding output script with the frozen contract, including restored backups."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "session-contract",
+          "contract-overwrite",
+          "assumed-prevout",
+          "local-validation"
+        ],
+        "summary": "The session contract handler calls `api.audit()` for each accepted peer contract. `AuditContract()` checks the new redeem key, hash and timing but does not freeze contract identity once funding or the other leg is committed. It overwrites `Contract`, `ContractAddr`, `LockTime` and the refund key without clearing or rebinding `Funding`. `BuildRedeem()` constructs its local previous-output script from that new contract rather than checking the actual funding transaction."
+      },
+      "ruleId": "atomic-swap.funded-contract-replacement",
+      "severity": {
+        "level": "medium",
+        "rationale": "High impact and medium likelihood. The attack needs an established session, funded first contract, a second commitment and a timed replacement. Recovery using the original script may defeat the attempted loss."
+      },
+      "summary": "A counterparty can send a second valid contract through the live session after the first was funded. Ferry overwrites the script while retaining the original funding outpoint, so the victim's later redeem spends that outpoint using the wrong script and is rejected.",
+      "taxonomy": {
+        "category": "atomic-swap",
+        "cwe": [
+          "CWE-841"
+        ]
+      },
+      "title": "A session peer can replace the script of an already-funded swap",
+      "validation": {
+        "assertions": [
+          "Once funds are committed, peer messages must not replace the script associated with the recorded funding outpoint.",
+          "Remote corruption of a live swap's claim path, with loss of the victim's Zenon payment if the victim does not restore the original contract and claim before the Bitcoin refund deadline."
+        ],
+        "counterevidence": [
+          "The replacement must preserve the victim's redeem key and secret hash and pass timing checks.",
+          "A previously saved recovery file containing contract A can enable manual recovery.",
+          "The attacker does not acquire the victim's private key; exploitation relies on blocking the normal claim path until the refund deadline."
+        ],
+        "evidenceRefs": [
+          "session-contract",
+          "contract-overwrite",
+          "assumed-prevout",
+          "local-validation"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.",
+          "Loss is conditional on the victim failing to restore the original script before the attacker can refund. Old recovery files or a retained transcript may permit recovery; this is not unconditional theft."
+        ],
+        "method": "static source trace",
+        "summary": "The parent traced the automatic session handler and all audit mutations. A second contract with the same redeem key, secret hash and admissible expiry but a different refund key passes validation and changes the P2SH address; the previously selected funding remains. Local spend validation uses the replacement script as its assumed prevout and therefore cannot detect the mismatch against the real chain output."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "The payload appears as visible amount text.",
+          "CLI commands are behind an opt-in toggle and require the user to execute them.",
+          "The Syrius create path later performs decimal conversion and rejects a malformed amount, but command generation does not pass through that validator."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "decode-offer",
+            "decoder-final-checks",
+            "form-offer-amount",
+            "store-amount",
+            "command-value",
+            "shell-template",
+            "copy-cli"
+          ],
+          "outcome": "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets.",
+          "sink": "user-executed copied znn-cli shell command",
+          "source": "Zenon amount in a counterparty's swapoffer1 payload",
+          "summary": "Zenon amount in a counterparty's swapoffer1 payload \u2192 user-executed copied znn-cli shell command. Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets."
+        },
+        "evidenceRefs": [
+          "decode-offer",
+          "decoder-final-checks",
+          "form-offer-amount",
+          "store-amount",
+          "command-value",
+          "shell-template",
+          "copy-cli"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "The victim must choose the optional CLI workflow, fill visible placeholders and run the copied command; no execution occurs merely by decoding or viewing the offer."
+        },
+        "reachability": {
+          "attacker": "A counterparty who supplies an encoded offer to a victim using Ferry's supported znn-cli workflow.",
+          "entrypoint": "Decode untrusted offer JSON",
+          "outcome": "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets.",
+          "summary": "The victim must choose the optional CLI workflow, fill visible placeholders and run the copied command; no execution occurs merely by decoding or viewing the offer."
+        },
+        "summary": "DecodeOffer does not validate ZenonAmt as a decimal. ActivePage copies it into zenonAmount, and Create stores the trimmed string without numeric validation. Offer.CheckCreate compares the agreed text but is not a numeric validator. znnCommands interpolates amountDisplay directly into shell input and SwapCard supplies a CopyButton for that command. An offer amount such as 1$(id) reaches the generated command unchanged; when the victim fills the normal keystore placeholders and runs it, the shell executes the substitution before znn-cli can reject the amount."
+      },
+      "codeEvidence": [
+        {
+          "code": "func DecodeOffer(s string) (*Offer, error) {\n\tconst prefix = \"swapoffer1:\"\n\tif len(s) <= len(prefix) || s[:len(prefix)] != prefix {\n\t\treturn nil, errors.New(\"not a swap offer string (expected a swapoffer1: prefix)\")\n\t}\n\traw, err := base64.RawURLEncoding.DecodeString(s[len(prefix):])\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"offer is not valid base64: %w\", err)\n\t}\n\tvar o Offer\n\tif err := json.Unmarshal(raw, &o); err != nil {\n\t\treturn nil, fmt.Errorf(\"offer is not valid JSON: %w\", err)\n\t}\n\tif o.Version != 1 {\n\t\treturn nil, fmt.Errorf(\"unsupported offer version %d\", o.Version)\n\t}",
+          "endLine": 517,
+          "explanation": "The counterparty controls the encoded Zenon amount field.",
+          "id": "decode-offer",
+          "label": "Decode untrusted offer JSON",
+          "language": "go",
+          "path": "wasm/swap.go",
+          "role": "user_input",
+          "startLine": 502
+        },
+        {
+          "code": "\t\treturn nil, fmt.Errorf(\"offer's btcLeg is %q, must be %q or %q\", o.BTCLeg, LegSend, LegReceive)\n\t}\n\tif o.FromRole != RoleInitiator && o.FromRole != RoleParticipant {\n\t\treturn nil, fmt.Errorf(\"offer's fromRole is %q, must be %q or %q\",\n\t\t\to.FromRole, RoleInitiator, RoleParticipant)\n\t}\n\tif o.AmountSats <= 0 {\n\t\treturn nil, fmt.Errorf(\"offer's amountSats is %d, which is not an amount\", o.AmountSats)\n\t}\n\treturn &o, nil\n}",
+          "endLine": 551,
+          "explanation": "The decoder ends after role and Bitcoin amount checks.",
+          "id": "decoder-final-checks",
+          "label": "Return without Zenon amount validation",
+          "language": "go",
+          "path": "wasm/swap.go",
+          "role": "propagation",
+          "startLine": 541
+        },
+        {
+          "code": "  // has to build the contract, which is the side sending BTC.\n  form.value.counterpartyPkhHex = d.yourLeg === 'send' ? (d.decoded.pkh ?? '') : ''\n  // Written whether or not the offer carried a value, which the guarded version\n  // of this did not do. A term the offer leaves out is still a term: Go reads a\n  // blank Zenon token as ZNN on both sides, so an offer that omits it and a\n  // form still holding the last thing typed into that box are two different\n  // swaps. Now that these fields are about to be locked, a stale value left in\n  // one is the worst of both -- disagreed about, and out of reach.\n  form.value.amountSats = String(d.decoded.amountSats ?? 0)\n  form.value.zenonPeerAddress = d.decoded.zenonAddr ?? ''\n  form.value.zenonToken = d.decoded.zenonToken ?? ''\n  form.value.zenonAmount = d.decoded.zenonAmt ?? ''\n  // Two of the terms an offer pins -- the token, and the pubkey hash naming the\n  // key their Bitcoin is redeemable by -- live behind Advanced options, which\n  // is collapsed. Checking what arrived is the whole job here, and a value\n  // folded away is one nobody checks. Opened rather than moved out: they are\n  // still advanced for somebody filling this in from scratch.\n  showAdvanced.value = true\n}",
+          "endLine": 550,
+          "explanation": "The amount string crosses unchanged into the form used to create the local swap.",
+          "id": "form-offer-amount",
+          "label": "Populate the form with the peer's amount",
+          "language": "typescript",
+          "path": "ui/src/pages/ActivePage.vue",
+          "role": "propagation",
+          "startLine": 532
+        },
+        {
+          "code": "\t\tState:      StateDraft,\n\t\tKey:        key,\n\t\tAmountSats: p.AmountSats,\n\t\tDestAddr:   p.DestAddr,\n\t\tZenon: ZenonLeg{\n\t\t\tSelfAddress:   zenonSelf,\n\t\t\tPeerAddress:   zenonPeer,\n\t\t\tTokenStandard: zenonToken,\n\t\t\tAmountDisplay: strings.TrimSpace(p.ZenonAmount),\n\t\t\tHashType:      znn.HashTypeSHA256,\n\t\t\tKeyMaxSize:    SecretSize,\n\t\t},\n\t}\n",
+          "endLine": 279,
+          "explanation": "Creation preserves shell syntax in the amount display field.",
+          "id": "store-amount",
+          "label": "Store the amount as trimmed text",
+          "language": "go",
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 266
+        },
+        {
+          "code": "export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {\n  const lines: string[] = []\n  const token = sw.zenon?.tokenStandard || 'ZNN'\n  const hours = sw.zenon?.expirationHours\n  const amount = sw.zenon?.amountDisplay || '<amount>'\n  const peer = sw.zenon?.peerAddress || '<counterparty z1 address>'\n  const self = sw.zenon?.selfAddress\n  const ours = sw.btcLegIsInitiators ? \"participant's\" : \"initiator's\"\n\n  // -k names the keystore (its file name, or the address it holds), -i the\n  // account index inside it, -p the passphrase and -u the node.\n  const node = ctx.nodeURL ? ` -u ${ctx.nodeURL}` : ' -u <wss://your-node:35998>'\n  const cliFlags = ` -k ${self || '<your keystore>'} -i <account index> -p <passphrase>${node}`\n\n  lines.push(`# znn-cli \u2014 ${ZNN_CLI_URL}`)",
+          "endLine": 74,
+          "explanation": "The generator pulls the unvalidated amount and other values directly into command variables.",
+          "id": "command-value",
+          "label": "Read stored strings for the command",
+          "language": "typescript",
+          "path": "ui/src/core/zenon-commands.ts",
+          "role": "propagation",
+          "startLine": 60
+        },
+        {
+          "code": "          ` needs ${hours}h. Use the Syrius extension, which has no cap.`,\n      )\n    } else {\n      lines.push(\n        `znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1` +\n          ` ${sw.secretHashHex}${cliFlags}`,\n      )\n    }",
+          "endLine": 99,
+          "explanation": "Shell substitution is active when the copied template is run by the victim.",
+          "id": "shell-template",
+          "label": "Interpolate unquoted command arguments",
+          "language": "typescript",
+          "path": "ui/src/core/zenon-commands.ts",
+          "role": "root_control",
+          "startLine": 92
+        },
+        {
+          "code": "        <div v-if=\"showCli\" class=\"min-w-0\">\n          <Button variant=\"outline\" size=\"sm\" @click=\"showCommands = !showCommands\">\n            {{ showCommands ? 'Hide' : 'Show' }} the command to run\n            {{ zenonAction || zenonReclaimable ? 'instead' : '' }}\n          </Button>\n          <!-- The commands DO scroll rather than wrap: they are line-oriented\n               shell input, and a wrapped command line is one somebody copies\n               wrong. Which makes every box between this <pre> and the page a\n               load-bearing min-w-0 \u2014 a grid or flex item defaults to min-width\n               auto, so without one at EVERY level the widest command line is\n               pushed all the way out through the card and widens the page\n               instead of scrolling inside its own box. -->\n          <div v-if=\"showCommands\" class=\"relative mt-2 w-full min-w-0\">\n            <pre\n              class=\"max-w-full overflow-x-auto rounded-md bg-muted/60 p-3 font-mono text-xs leading-relaxed\"\n              >{{ commands }}</pre>\n            <CopyButton :value=\"commands\" size=\"icon-sm\" class=\"absolute top-2 right-2\" />",
+          "endLine": 1332,
+          "explanation": "The optional CLI panel supports the copy-and-run workflow needed for impact.",
+          "id": "copy-cli",
+          "label": "Expose the generated command for copying",
+          "language": "typescript",
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "sink",
+          "startLine": 1316
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Complete source-to-sink trace with identified controls and counterevidence; independent review corroborates the path. Dynamic end-to-end proof was not obtained."
+      },
+      "findingId": "csf_095ef75befb2c17e1f6fce8e",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:120d10df75bf153748712e42cdcd7d5c2191eb8bd140e86e5a6ddd2fd13daada"
+      },
+      "identity": {
+        "anchor": "an-offer-amount-becomes-shell-syntax-in-copied-cli-commands"
+      },
+      "locations": [
+        {
+          "endLine": 98,
+          "path": "ui/src/core/zenon-commands.ts",
+          "role": "root_control",
+          "startLine": 94
+        },
+        {
+          "endLine": 517,
+          "path": "wasm/swap.go",
+          "role": "user_input",
+          "startLine": 502
+        },
+        {
+          "endLine": 551,
+          "path": "wasm/swap.go",
+          "role": "propagation",
+          "startLine": 541
+        },
+        {
+          "endLine": 550,
+          "path": "ui/src/pages/ActivePage.vue",
+          "role": "propagation",
+          "startLine": 532
+        },
+        {
+          "endLine": 279,
+          "path": "wasm/manager.go",
+          "role": "propagation",
+          "startLine": 266
+        },
+        {
+          "endLine": 74,
+          "path": "ui/src/core/zenon-commands.ts",
+          "role": "propagation",
+          "startLine": 60
+        },
+        {
+          "endLine": 1332,
+          "path": "ui/src/components/SwapCard.vue",
+          "role": "sink",
+          "startLine": 1316
+        }
+      ],
+      "occurrenceId": "occ_84d467080f2c6983a7adbdf5",
+      "preventiveControls": [
+        "Keep peer input as typed data; validate positive decimals and encode every shell argument, or replace shell snippets with a structured wallet invocation."
+      ],
+      "provenance": {
+        "candidateId": "cli-offer-command-injection",
+        "originalCandidates": [
+          {
+            "evidence": "DecodeOffer wasm/swap.go:502-551 does not validate ZenonAmt; Create manager.go:273 stores trimmed arbitrary string; znnCommands ui/src/core/zenon-commands.ts:94 directly interpolates amount into printed shell command. User joins malicious offer and copies optional CLI command.",
+            "source": "parent"
+          },
+          {
+            "CWE": "CWE-78",
+            "attacker": "A counterparty who supplies an encoded offer to a victim using Ferry's supported znn-cli workflow.",
+            "confidence": "high",
+            "counterevidence": [
+              "The payload appears as visible amount text.",
+              "CLI commands are behind an opt-in toggle and require the user to execute them.",
+              "The Syrius create path later performs decimal conversion and rejects a malformed amount, but command generation does not pass through that validator."
+            ],
+            "exact_evidence": [
+              "form.value.zenonAmount = d.decoded.zenonAmt ?? ''",
+              "AmountDisplay: strings.TrimSpace(p.ZenonAmount)",
+              "const amount = sw.zenon?.amountDisplay || '<amount>'",
+              "`znn-cli htlc.create ${peer} ${token} ${amount} ${hours || '<hours>'} 1`",
+              "<CopyButton :value=\"commands\" ... />"
+            ],
+            "impact": "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets.",
+            "invariant": "Offer data copied into a generated command must remain a literal argument rather than executable shell syntax.",
+            "locations": [
+              {
+                "file": "wasm/swap.go",
+                "lines": "DecodeOffer"
+              },
+              {
+                "file": "wasm/manager.go",
+                "lines": "270-274"
+              },
+              {
+                "file": "ui/src/pages/ActivePage.vue",
+                "lines": "540-543"
+              },
+              {
+                "file": "ui/src/core/zenon-commands.ts",
+                "lines": "60-72"
+              },
+              {
+                "file": "ui/src/core/zenon-commands.ts",
+                "lines": "94-98"
+              },
+              {
+                "file": "ui/src/components/SwapCard.vue",
+                "lines": "1316-1332"
+              }
+            ],
+            "remediation": "Validate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.",
+            "rule": "Validate numeric offer fields and quote shell arguments",
+            "severity": "high",
+            "source_to_sink": "DecodeOffer does not validate ZenonAmt as a decimal. ActivePage copies it into zenonAmount, and Create stores the trimmed string without numeric validation. Offer.CheckCreate compares the agreed text but is not a numeric validator. znnCommands interpolates amountDisplay directly into shell input and SwapCard supplies a CopyButton for that command. An offer amount such as 1$(id) reaches the generated command unchanged; when the victim fills the normal keystore placeholders and runs it, the shell executes the substitution before znn-cli can reject the amount.",
+            "title": "Counterparty-controlled amounts become executable shell syntax in generated CLI commands"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Validate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.",
+      "remediationTests": [
+        "Reject shell metacharacters, substitutions, whitespace and invalid numeric formats at offer decoding and swap creation.",
+        "Never emit a runnable command for incomplete or invalid terms; test all interpolated values, including node URLs and IDs.",
+        "Verify safe quoting by comparing parsed shell arguments in an isolated nonexecuting parser, and preserve valid decimal amounts."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "decode-offer",
+          "decoder-final-checks",
+          "form-offer-amount",
+          "store-amount",
+          "command-value",
+          "shell-template",
+          "copy-cli"
+        ],
+        "summary": "`DecodeOffer()` validates the envelope, key/hash fields, network, roles and Bitcoin amount, but not `ZenonAmt`. The form copies the peer's string and `Manager.Create()` stores it in `AmountDisplay`; equal offer/form strings pass the terms comparison. `znnCommands()` then interpolates this value into a shell command, and the swap card exposes a copy button. Wallet-specific numeric checks are on another path and do not sanitize command generation."
+      },
+      "ruleId": "command-injection.offer-amount-cli",
+      "severity": {
+        "level": "medium",
+        "rationale": "High impact and medium likelihood. The victim must choose the optional CLI workflow, fill visible placeholders and run the copied command; no execution occurs merely by decoding or viewing the offer."
+      },
+      "summary": "A malicious offer can place shell substitution syntax in its Zenon amount. Ferry copies that string into the optional znn-cli command without quoting. A user who fills the command's wallet placeholders and runs it can execute the counterparty's command with their local account privileges.",
+      "taxonomy": {
+        "category": "command-injection",
+        "cwe": [
+          "CWE-78"
+        ]
+      },
+      "title": "An offer amount becomes shell syntax in copied CLI commands",
+      "validation": {
+        "assertions": [
+          "Offer data copied into a generated command must remain a literal argument rather than executable shell syntax.",
+          "Arbitrary command execution as the user running znn-cli, potentially exposing wallet files or other local secrets."
+        ],
+        "counterevidence": [
+          "The payload appears as visible amount text.",
+          "CLI commands are behind an opt-in toggle and require the user to execute them.",
+          "The Syrius create path later performs decimal conversion and rejects a malformed amount, but command generation does not pass through that validator."
+        ],
+        "evidenceRefs": [
+          "decode-offer",
+          "decoder-final-checks",
+          "form-offer-amount",
+          "store-amount",
+          "command-value",
+          "shell-template",
+          "copy-cli"
+        ],
+        "limitations": [
+          "No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability."
+        ],
+        "method": "static source trace",
+        "summary": "The parent traced the unvalidated field from offer decoding through form population and stored state to the literal template and copy control. A string containing shell substitution, for example `1$(id)`, is emitted as executable syntax in the command's amount position. No shell payload was executed. HTML escaping protects page rendering but not a copied shell command."
+      }
+    },
+    {
+      "attackPath": {
+        "counterevidence": [
+          "The signature and AEAD checks prevent a relay from merely editing an honest take. The attacker must generate and sign its own valid take, which requires only its own key and the publicly advertised recipient key.",
+          "An honest default public relay may reject far-future or ancient timestamps. No implementation or rejection policy for those external services exists in the reviewed source, and their current acceptance was not tested. Delivery through a malicious configured relay is the directly supported case; permissive honest-relay delivery is conditional.",
+          "Only requests naming a locally retained open/taken post reach this inbox. Already handled events and missing/finished posts are filtered. Withdrawing or otherwise excluding the affected post can remove its requests from the computed inbox.",
+          "The normal sending handler uses the current clock, so ordinary application-generated requests do not trigger the issue. The vulnerability is acceptance of malicious wire data, not normal clock formatting.",
+          "The rendering effect was statically assessed; no browser payload or exploit was executed."
+        ],
+        "dataflow": {
+          "evidenceRefs": [
+            "relay-event",
+            "verified-unbounded-take",
+            "take-store",
+            "inbox-filter",
+            "date-format"
+          ],
+          "outcome": "Shared board inbox cannot render/update normally, including honest requests.",
+          "sink": "BoardInbox date formatting",
+          "source": "attacker-selected signed created_at integer",
+          "summary": "Relay EVENT \u2192 OpenTake \u2192 InboundTake.at \u2192 shared inbox \u2192 throwing toISOString."
+        },
+        "evidenceRefs": [
+          "relay-event",
+          "verified-unbounded-take",
+          "take-store",
+          "inbox-filter",
+          "date-format"
+        ],
+        "impact": {
+          "level": "medium",
+          "why": "One bad request interferes with legitimate requests from all relays, but no coin movement or key access is established."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "External relay timestamp policy may block public delivery; a malicious configured relay can still provide the event."
+        },
+        "limitations": [
+          "No funds-loss claim."
+        ],
+        "reachability": {
+          "attacker": "A malicious configured relay, or an arbitrary board participant able to have one configured relay deliver its event. The attacker needs only its own Nostr key and the victim's public board key and open/taken post ID; it does not need the victim's private key, a wallet proof, or a previously shared session code.",
+          "entrypoint": "configured relay's signed take events",
+          "outcome": "Board inbox availability loss",
+          "summary": "Requires a live local post and event delivery by a malicious or permissive configured relay. The attacker needs only its own key plus the public post and recipient identity."
+        },
+        "summary": "An attacker with its own Nostr key encrypts a take to the victim's public board identity, names a live local post, signs an out-of-range timestamp and has a configured relay deliver it. The request survives decoding and post filtering, then throws during inbox rendering."
+      },
+      "codeEvidence": [
+        {
+          "code": "    sock.onmessage = (ev: MessageEvent) => {\n      if (typeof ev.data !== 'string') return\n      let frame: unknown\n      try {\n        frame = JSON.parse(ev.data)\n      } catch {\n        return\n      }\n      if (!Array.isArray(frame) || frame[0] !== 'EVENT') return\n      const event = frame[2] as NostrEvent | undefined\n      // A relay is free to send anything. Only the shape is checked here \u2014\n      // whether it is genuine is the module's business, and it checks the\n      // signature over a hash it recomputes rather than one this file passed on.\n      if (!event?.id || typeof event.content !== 'string') return\n      if (this.seen.has(event.id)) return\n      this.seen.add(event.id)\n      this.onEvent?.(event)",
+          "endLine": 199,
+          "explanation": "A configured relay can deliver an event regardless of client subscription filter semantics.",
+          "id": "relay-event",
+          "label": "Relay frames enter application routing",
+          "path": "ui/src/core/nostr.ts",
+          "role": "entrypoint",
+          "startLine": 183
+        },
+        {
+          "code": "func OpenTake(identity *BoardIdentity, ev *NostrEvent) (*InboundTake, error) {\n\tif err := verifyEvent(ev); err != nil {\n\t\treturn nil, err\n\t}\n\tif ev.Kind != takeKind {\n\t\treturn nil, fmt.Errorf(\"event kind %d is not a ferry board take\", ev.Kind)\n\t}\n\tif p := tagValue(ev, \"p\"); !strings.EqualFold(p, identity.PubKey) {\n\t\treturn nil, errors.New(\"that take is addressed to somebody else\")\n\t}\n\tpriv, err := identity.PrivKey()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tsecret, err := boardShared(priv, ev.PubKey)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tplain, err := openBox(secret, ev.Content)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar take Take\n\tif err := json.Unmarshal(plain, &take); err != nil {\n\t\treturn nil, fmt.Errorf(\"that take is not readable: %w\", err)\n\t}\n\tif err := take.validate(); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &InboundTake{Take: take, From: ev.PubKey, EventID: ev.ID, At: ev.CreatedAt}, nil",
+          "endLine": 871,
+          "explanation": "The attacker can sign and encrypt its own take; these authenticity checks do not constrain its `created_at` value.",
+          "id": "verified-unbounded-take",
+          "label": "Signed and decrypted timestamp remains unbounded",
+          "path": "wasm/boardpost.go",
+          "role": "propagation",
+          "startLine": 842
+        },
+        {
+          "code": "    if (seenTakes.has(ev.id)) return\n    seenTakes.add(ev.id)\n    // Already dealt with in an earlier session. Skipped before it is opened\n    // rather than filtered after, because opening it is a call into the module\n    // to decrypt something whose answer is already known.\n    if (handled.value.includes(ev.id)) return\n    try {\n      const {take} = await api.boardReadTake(ev)\n      // Newest first: an inbox where the answer to \"who wants this\" is at the\n      // bottom is one that gets scrolled past.\n      takes.value = [take, ...takes.value.filter((t) => t.eventId !== take.eventId)]\n    } catch {",
+          "endLine": 332,
+          "explanation": "The returned timestamp is stored with requests from all configured relays.",
+          "id": "take-store",
+          "label": "Accepted take enters shared state",
+          "path": "ui/src/core/composables/useBoard.ts",
+          "role": "propagation",
+          "startLine": 321
+        },
+        {
+          "code": "const inbox = computed(() =>\n  takes.value.filter((t) => {\n    if (handled.value.includes(t.eventId)) return false\n    const post = mine.value.find((p) => p.post.id === t.take.postId)\n    if (!post) return false\n    return post.post.status === 'open' || post.post.status === 'taken'\n  }),",
+          "endLine": 178,
+          "explanation": "An undismissed take naming an open or taken local post remains visible regardless of timestamp.",
+          "id": "inbox-filter",
+          "label": "Local post filter preserves malformed time",
+          "path": "ui/src/core/composables/useBoard.ts",
+          "role": "propagation",
+          "startLine": 172
+        },
+        {
+          "code": "        </p>\n        <p class=\"font-mono text-xs text-muted-foreground/80\">\n          {{ new Date(t.at * 1000).toISOString().slice(0, 19).replace('T', ' ') }}\n        </p>\n      </div>",
+          "endLine": 96,
+          "explanation": "Formatting an out-of-range time throws while rendering the common inbox, before its request controls can be displayed.",
+          "id": "date-format",
+          "label": "Unguarded date formatting throws",
+          "path": "ui/src/components/BoardInbox.vue",
+          "role": "root_control",
+          "startLine": 92
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Source traces event acceptance to the shared renderer; executing the exact date expression in isolation reproduced RangeError. Full encrypted delivery and browser rendering were not executed."
+      },
+      "findingId": "csf_f86b1f17a253c04802614722",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:c0f926e1352b16f363340f215dc8bdc359b92f1e1146c09bea5209a4bfe311be"
+      },
+      "identity": {
+        "anchor": "a-crafted-take-timestamp-disables-the-shared-board-inbox"
+      },
+      "locations": [
+        {
+          "endLine": 94,
+          "path": "ui/src/components/BoardInbox.vue",
+          "role": "root_control",
+          "startLine": 94
+        },
+        {
+          "endLine": 199,
+          "path": "ui/src/core/nostr.ts",
+          "role": "entrypoint",
+          "startLine": 183
+        },
+        {
+          "endLine": 871,
+          "path": "wasm/boardpost.go",
+          "role": "propagation",
+          "startLine": 842
+        },
+        {
+          "endLine": 332,
+          "path": "ui/src/core/composables/useBoard.ts",
+          "role": "propagation",
+          "startLine": 321
+        },
+        {
+          "endLine": 178,
+          "path": "ui/src/core/composables/useBoard.ts",
+          "role": "propagation",
+          "startLine": 172
+        }
+      ],
+      "occurrenceId": "occ_a26a0ab1080e05dde4ec5766",
+      "preventiveControls": [
+        "Validate numeric/time bounds at untrusted message entry and make rendering functions total with per-item error containment."
+      ],
+      "provenance": {
+        "candidateId": "board-inbox-timestamp",
+        "originalCandidates": [
+          {
+            "attacker": "A malicious configured relay, or an arbitrary board participant able to have one configured relay deliver its event. The attacker needs only its own Nostr key and the victim's public board key and open/taken post ID; it does not need the victim's private key, a wallet proof, or a previously shared session code.",
+            "confidence": "high for the source path; delivery through honest default relays is unverified",
+            "control": "The attacker chooses the signed Nostr created_at value and supplies a structurally valid Take encrypted to the victim. OpenTake verifies author signature and recipient encryption but never bounds the timestamp before exposing it as InboundTake.at.",
+            "counterevidence": [
+              "The signature and AEAD checks prevent a relay from merely editing an honest take. The attacker must generate and sign its own valid take, which requires only its own key and the publicly advertised recipient key.",
+              "An honest default public relay may reject far-future or ancient timestamps. No implementation or rejection policy for those external services exists in the reviewed source, and their current acceptance was not tested. Delivery through a malicious configured relay is the directly supported case; permissive honest-relay delivery is conditional.",
+              "Only requests naming a locally retained open/taken post reach this inbox. Already handled events and missing/finished posts are filtered. Withdrawing or otherwise excluding the affected post can remove its requests from the computed inbox.",
+              "The normal sending handler uses the current clock, so ordinary application-generated requests do not trigger the issue. The vulnerability is acceptance of malicious wire data, not normal clock formatting.",
+              "The rendering effect was statically assessed; no browser payload or exploit was executed."
+            ],
+            "cwe": [
+              "CWE-20",
+              "CWE-248"
+            ],
+            "evidence": [
+              "wasm/session.go:154-161 declares NostrEvent.CreatedAt as int64. Values outside the JavaScript Date range remain representable in this wire type; for example a seconds value just above 8640000000000 is also exactly representable by JavaScript Number.",
+              "wasm/boardpost.go:287-322 verifies the event's recomputed ID and self-selected author's signature, with no timestamp range check. Signing an attacker-chosen timestamp therefore satisfies this control.",
+              "wasm/boardpost.go:715-746 validates take fields, but does not constrain event time; wallet addresses are optional on receipt. Lines 842-871 check kind, recipient, ECDH decryption, and Take validation, then return At: ev.CreatedAt unchanged.",
+              "ui/src/core/nostr.ts:183-199 delivers EVENT frames without validating their timestamp. ui/src/core/composables/useBoard.ts:328-331 stores the decoded take; lines 172-178 retain it whenever it names a local open or taken post and has not been dismissed.",
+              "ui/src/pages/BoardPage.vue:335-342 passes the entire combined inbox to one BoardInbox component. ui/src/components/BoardInbox.vue:79-115 renders every request in that component and invokes new Date(t.at * 1000).toISOString() without a range check or local exception fallback, before its Accept and Dismiss controls.",
+              "ui/src/core/composables/useBoard.ts:389-391 subscribes for takes without a since bound, allowing a retaining or malicious relay to deliver the same request again after reload. Its in-memory removal is consequently not durable mitigation unless the event is marked handled or its post is excluded."
+            ],
+            "id": "board-take-date-render-dos",
+            "impact": "A delivered malicious take causes a RangeError during the shared inbox render, preventing normal display or updating of unrelated honest requests and their accept/dismiss controls. One malicious relay can therefore impair requests supplied by other healthy relays. Continued replay can restore the condition after reload while the referenced post remains open or taken. This is board-inbox availability loss; this path establishes neither funds loss nor key disclosure.",
+            "remediation": "Reject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls.",
+            "severity": "medium",
+            "source": {
+              "endLine": 95,
+              "path": "ui/src/components/BoardInbox.vue",
+              "startLine": 93
+            },
+            "title": "A signed take with an unchecked timestamp prevents the shared board inbox from rendering"
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Reject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls.",
+      "remediationTests": [
+        "A valid signed/encrypted take outside the supported timestamp range must be rejected or safely displayed.",
+        "A malformed take mixed with legitimate requests must not prevent accepting or dismissing legitimate requests."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "relay-event",
+          "verified-unbounded-take",
+          "take-store",
+          "inbox-filter",
+          "date-format"
+        ],
+        "summary": "`OpenTake()` verifies the author's signature and decrypts the request, then returns `CreatedAt` unchanged. `useBoard` retains requests by post identity and dismissal state without validating time. `BoardInbox` calls `toISOString()` on every request's date during its shared render; values accepted by Go's `int64` can be outside JavaScript's supported Date range and throw."
+      },
+      "ruleId": "denial-of-service.board-inbox-timestamp",
+      "severity": {
+        "level": "low",
+        "rationale": "Feature-level availability impact with a malicious or permissive configured relay prerequisite. The source supports no fund loss or key disclosure, and honest default relay acceptance is unverified."
+      },
+      "summary": "A malicious configured relay can deliver a validly signed, encrypted take whose timestamp crashes date formatting in the shared board inbox. This blocks rendering of legitimate requests as well as the malformed one.",
+      "taxonomy": {
+        "category": "denial-of-service",
+        "cwe": [
+          "CWE-20",
+          "CWE-248"
+        ]
+      },
+      "title": "A crafted take timestamp disables the shared board inbox",
+      "validation": {
+        "assertions": [
+          "No event timestamp range check occurs before inbox storage.",
+          "A single invalid timestamp throws in the shared inbox render expression."
+        ],
+        "counterevidence": [
+          "The signature and AEAD checks prevent a relay from merely editing an honest take. The attacker must generate and sign its own valid take, which requires only its own key and the publicly advertised recipient key.",
+          "An honest default public relay may reject far-future or ancient timestamps. No implementation or rejection policy for those external services exists in the reviewed source, and their current acceptance was not tested. Delivery through a malicious configured relay is the directly supported case; permissive honest-relay delivery is conditional.",
+          "Only requests naming a locally retained open/taken post reach this inbox. Already handled events and missing/finished posts are filtered. Withdrawing or otherwise excluding the affected post can remove its requests from the computed inbox.",
+          "The normal sending handler uses the current clock, so ordinary application-generated requests do not trigger the issue. The vulnerability is acceptance of malicious wire data, not normal clock formatting.",
+          "The rendering effect was statically assessed; no browser payload or exploit was executed."
+        ],
+        "evidenceRefs": [
+          "relay-event",
+          "verified-unbounded-take",
+          "take-store",
+          "inbox-filter",
+          "date-format"
+        ],
+        "limitations": [
+          "No encrypted network delivery, Vue browser render, or default public relay policy was tested.",
+          "A malicious configured relay is the supported delivery case; withdrawing the referenced post or removing that relay may restore the feature."
+        ],
+        "method": "static source trace and isolated execution of the exact formatter",
+        "summary": "A Node vm evaluated the date expression extracted directly from `BoardInbox.vue`. Timestamp 0 produced 1970-01-01 00:00:00; timestamp 8640000000001 seconds produced RangeError: Invalid time value. Source inspection confirmed the signed/decrypted path can preserve that integer and the inbox has no per-request fallback."
+      }
+    }
+  ],
+  "scanId": "f57e14cb-0b12-4e58-9724-a1cd8419eb3c",
+  "schemaVersion": "1.0"
+}

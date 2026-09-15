@@ -122,6 +122,16 @@ export const api = {
     }),
 
   /**
+   * The sign-time gate for a create that answers the counterparty's Bitcoin
+   * funding: the same fail-closed check planCreate runs, on its own, for the
+   * moment before a built block is handed to the wallet. Throws with the
+   * reason when the funding is missing, short, unconfirmed, spent, or cannot
+   * be read; answers {ok, waits} otherwise.
+   */
+  fundingCheck: (id: string, settings: Settings) =>
+    wasmCall<{ok: true; waits: boolean}>('fundingCheck', {id, settings}),
+
+  /**
    * Record what the wallet published, and check it.
    *
    * A create is fed straight back through the ordinary verification path: the
@@ -153,6 +163,18 @@ export const api = {
     }),
 
   setSecret: (id: string, secretHex: string) => wasmCall<Swap>('secret', {id, secretHex}),
+
+  /**
+   * Complete the Zenon terms a swap was created without: this user's own
+   * address, the counterparty's, the agreed amount. Blank fields are left
+   * alone; a field already recorded refuses a different value, because these
+   * are terms of the trade. Filling one in un-verifies the leg.
+   */
+  zenonTerms: (
+    id: string,
+    terms: {selfAddress?: string; peerAddress?: string; amount?: string},
+    settings: Settings,
+  ) => wasmCall<Swap>('zenonTerms', {id, ...terms, settings}),
 
   archive: (id: string, archived: boolean) => wasmCall<Swap>('archive', {id, archived}),
 

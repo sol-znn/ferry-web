@@ -1,6 +1,7 @@
 import {computed, ref, shallowRef, watch} from 'vue'
 import {api} from '@/core/api'
-import {RelayPool, type NostrEvent, type RelayStatus} from '@/core/nostr'
+import {RelayPool, type AcceptEvent, type NostrEvent, type RelayStatus} from '@/core/nostr'
+import {isStaleWrite} from '@/core/wasm'
 import {owed, type HandoffType} from '@/core/handoffs'
 import {useFerry} from '@/core/composables/useFerry'
 import {syncNow} from '@/core/composables/useAutoRefresh'
@@ -272,7 +273,10 @@ async function join(code?: string, attachTo?: string) {
       // No `since`: a party who joins late must receive what was already said,
       // and a room only ever carries one conversation.
       [{kinds: [r.kind], authors: [r.pubKey], '#d': [r.roomId], limit: 100}],
-      (ev) => void receive(ev),
+      (ev, acceptEvent) => {
+        if (pool.value !== p) return
+        return receive(ev, acceptEvent)
+      },
       () => (relays.value = p.status),
     )
     relays.value = p.status
@@ -545,12 +549,25 @@ async function applyValue(what: string, fn: () => Promise<unknown>) {
     say('in', `Received ${what}, but this session is not attached to a swap yet.`, false)
     return
   }
-  try {
-    await fn()
-    changed.value += 1
-    say('in', `Accepted ${what} — it matches this swap.`, true)
-  } catch (e) {
-    say('in', `REFUSED ${what}: ${e instanceof Error ? e.message : String(e)}`, false)
+  // A stale write is not a refusal of the value: the record changed under the
+  // call -- a refresh landed -- and the engine declined to overwrite it. The
+  // call is made once more, against the record as it now is; a second such
+  // answer is reported like any other.
+  let retried = false
+  for (;;) {
+    try {
+      await fn()
+      changed.value += 1
+      say('in', `Accepted ${what} — it matches this swap.`, true)
+      return
+    } catch (e) {
+      if (isStaleWrite(e) && !retried) {
+        retried = true
+        continue
+      }
+      say('in', `REFUSED ${what}: ${e instanceof Error ? e.message : String(e)}`, false)
+      return
+    }
   }
 }
 
@@ -560,17 +577,22 @@ async function applyValue(what: string, fn: () => Promise<unknown>) {
  * event id -- the id would only catch the copy this tab sent, not one the same
  * user sent from another tab in the same room.
  */
-async function receive(ev: NostrEvent) {
-  if (!room.value) return
+async function receive(ev: NostrEvent, acceptEvent: AcceptEvent) {
+  const targetRoom = room.value
+  if (!targetRoom) return
   const {body: settings} = useSettings()
 
   let msg: SessionMessage
   try {
-    msg = (await api.sessionOpen(room.value.code, ev)).message
+    msg = (await api.sessionOpen(targetRoom.code, ev)).message
   } catch (e) {
+    if (room.value !== targetRoom) return
     say('in', `A message could not be opened: ${e instanceof Error ? e.message : String(e)}`, false)
     return
   }
+  // Leaving keeps the old pool alive briefly to send a goodbye. Its pending
+  // verification must not apply a message to a room joined in the meantime.
+  if (room.value !== targetRoom || !acceptEvent()) return
   // Our own message coming back off a relay we published it to. Filtered by
   // peer id rather than by role, because a session usually starts before either
   // side has a swap and therefore before either side has a role.

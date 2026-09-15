@@ -1,0 +1,414 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_final",
+  "sourceScan": {
+    "scanId": "f57e14cb-0b12-4e58-9724-a1cd8419eb3c",
+    "targetRevision": "be879e1bd61a9922ee58e16d32095bafa43bdf6e",
+    "sourceDrift": "none",
+    "integrityState": "unsealed during final reporting"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "Centralize commitment and first-secret-disclosure decisions behind complete frozen terms and current operation-specific evidence; ship local guards immediately."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": [
+      "incremental",
+      "medium_term"
+    ],
+    "nonNegotiables": [
+      "Static client; no new custody or server requirement.",
+      "Preserve both initiating-chain orders and offline recovery.",
+      "Retain keys and funded records across migration and rollback."
+    ],
+    "assumptions": [
+      "No measured latency or memory budget supplied.",
+      "Configured nodes remain trusted for chain observations."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "commitment-boundary",
+      "title": "Own the swap commitment boundary",
+      "summary": "Make complete frozen terms and fresh evidence prerequisites for irreversible actions.",
+      "diagnosis": "Multiple consumers treat partial mutable state as permission to act.",
+      "evidence": [
+        {
+          "evidenceId": "btc-underfunding",
+          "title": "Auto Mode reveals the secret for an underfunded Bitcoin payment",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "wasm/manager.go",
+          "claim": "`Refresh()` reads the peer-funded contract's UTXOs and stores an underpayment as `Funding` and `StateFunded`; it only logs the mismatch with `AmountSats`. `canRedeem` treats any funding record as sufficient, and `autoStep()` adds confirmation but no amount check. `Manager.Redeem()` then signs and broadcasts with the secret without enforcing the agreed consideration."
+        },
+        {
+          "evidenceId": "btc-unconfirmed-create",
+          "title": "Zenon funds can be locked against replaceable Bitcoin funding",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "wasm/walletblock.go",
+          "claim": "`zenonLegPossible` checks only the existence of a `Funding` record for Bitcoin-initiated swaps and explicitly accepts mempool funding. The resulting Zenon action reaches `planCreate()`, whose guard requires an audited script but never checks funding, confirmations, value, or whether the output remains unspent. Auto Mode can prepare and send that plan to the wallet."
+        },
+        {
+          "evidenceId": "incomplete-zenon-terms",
+          "title": "Missing Zenon terms can verify an HTLC that pays the attacker",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "wasm/znn/client.go",
+          "claim": "`Manager.Create()` accepts empty Zenon addresses and stores optional amount text. For an incoming HTLC, `zenonVerifyParams()` copies `SelfAddress` into `ExpectRecipient`; `VerifyHtlc()` runs that comparison only when nonempty. `zenonExpectations()` leaves `MinAmount` unset for a blank amount, which also disables comparison. `VerifyZenon()` can persist `Verified`, and `planUnlock()` relies on it to encode the preimage; the wallet sync path also returns without binding an empty payout address."
+        },
+        {
+          "evidenceId": "nonminimal-contract-push",
+          "title": "Contract audit accepts a script that blocks the victim's redeem branch",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "wasm/htlc.go",
+          "claim": "`ParseContract()` records each token's opcode and data but compares opcodes only at fixed template positions. Dynamic hash and pubkey pushes are accepted based on their decoded length, and numeric values are checked separately without requiring canonical push opcodes. `AuditContract()` accepts those parsed terms. Later `BuildRedeem()` runs the script with `StandardVerifyFlags`, which enforces minimal pushes in the executing branch."
+        },
+        {
+          "evidenceId": "contract-replacement",
+          "title": "A session peer can replace the script of an already-funded swap",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "wasm/manager.go",
+          "claim": "The session contract handler calls `api.audit()` for each accepted peer contract. `AuditContract()` checks the new redeem key, hash and timing but does not freeze contract identity once funding or the other leg is committed. It overwrites `Contract`, `ContractAddr`, `LockTime` and the refund key without clearing or rebinding `Funding`. `BuildRedeem()` constructs its local previous-output script from that new contract rather than checking the actual funding transaction."
+        },
+        {
+          "evidenceId": "cli-offer-command-injection",
+          "title": "An offer amount becomes shell syntax in copied CLI commands",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "ui/src/core/zenon-commands.ts",
+          "claim": "`DecodeOffer()` validates the envelope, key/hash fields, network, roles and Bitcoin amount, but not `ZenonAmt`. The form copies the peer's string and `Manager.Create()` stores it in `AmountDisplay`; equal offer/form strings pass the terms comparison. `znnCommands()` then interpolates this value into a shell command, and the swap card exposes a copy button. Wallet-specific numeric checks are on another path and do not sanitize command generation."
+        },
+        {
+          "evidenceId": "board-inbox-timestamp",
+          "title": "A crafted take timestamp disables the shared board inbox",
+          "claimType": "observed",
+          "sourceKind": "source",
+          "path": "ui/src/components/BoardInbox.vue",
+          "claim": "`OpenTake()` verifies the author's signature and decrypts the request, then returns `CreatedAt` unchanged. `useBoard` retains requests by post identity and dismissal state without validating time. `BoardInbox` calls `toISOString()` on every request's date during its shared render; values accepted by Go's `int64` can be outside JavaScript's supported Date range and throw."
+        }
+      ],
+      "desiredInvariants": [
+        "First disclosure requires adequate current consideration and a safe claim window.",
+        "Second-leg commitment requires confirmed initiating-leg funding bound to the frozen contract.",
+        "Verification requires complete recipient, positive amount, token, hash and expiry expectations.",
+        "Committed contract identity is immutable; identical retransmissions are idempotent.",
+        "Action plans are scoped to one swap version, network, operation and current evidence."
+      ],
+      "proposalPath": "proposals/commitment-boundary.md",
+      "options": [
+        {
+          "optionId": "local-guards",
+          "title": "Strengthen existing methods",
+          "kind": "baseline",
+          "summary": "Add the missing checks to existing dangerous methods.",
+          "diagramPaths": {
+            "before": "diagrams/commitment-boundary-before.mmd",
+            "after": "diagrams/commitment-boundary-local-guards-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "btc-underfunding",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "btc-unconfirmed-create",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "incomplete-zenon-terms",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "nonminimal-contract-push",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "contract-replacement",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "cli-offer-command-injection",
+              "effect": "unaffected",
+              "tacticalFixRequired": true,
+              "rationale": "Separate local trust boundary; needs its own fix."
+            },
+            {
+              "evidenceId": "board-inbox-timestamp",
+              "effect": "unaffected",
+              "tacticalFixRequired": true,
+              "rationale": "Separate local trust boundary; needs its own fix."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Closes known paths; callers must continue applying shared predicates.",
+              "validationPlan": "Run original regression cases and direct API bypass tests."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Fresh reads add node latency before dangerous actions.",
+              "validationPlan": "Measure preparation/dispatch latency and RPC count on fixed local nodes, including delayed nodes."
+            },
+            {
+              "dimension": "memory",
+              "direction": "unknown",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Temporary observations only; expected bounded cost.",
+              "validationPlan": "Compare WASM memory with 1, 10 and 100 active swaps; ensure memory returns after closure."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Unsafe or unavailable observations refuse commitment; recovery stays separate.",
+              "validationPlan": "Exercise timeout, replacement, stale-plan and retry cases; no duplicate funding."
+            },
+            {
+              "dimension": "operability",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Improve existing local error messages; no new service.",
+              "validationPlan": "Inspect diagnostic output for actionable reasons and absence of secrets."
+            },
+            {
+              "dimension": "migration",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Preserve storage format while changing unsafe behaviors.",
+              "validationPlan": "Test old exports and funded records in both initiating-chain orders."
+            },
+            {
+              "dimension": "developer-ergonomics",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Small familiar edits retain repeated review obligations.",
+              "validationPlan": "Enumerate and review every dangerous API consumer against the shared contract."
+            },
+            {
+              "dimension": "rollback",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Keep guards on rollback or disable unsafe new commitments.",
+              "validationPlan": "Rehearse downgrade with guards retained and funded records recoverable."
+            }
+          ],
+          "residualRisks": [
+            "Configured node dishonesty and compromised same-origin code remain trusted-base risks.",
+            "A delayed external wallet prompt can outlive observations; freshness rules still required.",
+            "CLI injection and board rendering remain separate fixes."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "wasm/manager.go",
+              "wasm/walletblock.go",
+              "wasm/htlc.go",
+              "wasm/znn/client.go",
+              "ui/src/core/api.ts",
+              "ui/src/core/composables/useSession.ts",
+              "ui/src/components/SwapCard.vue"
+            ],
+            "workPackages": [
+              "Immediate guards and regression cases.",
+              "Complete/frozen terms and action evidence.",
+              "Caller migration and compatibility verification."
+            ],
+            "acceptanceCriteria": [
+              "Unsafe original paths fail before commitment or disclosure.",
+              "Both valid swap orderings and offline recovery remain functional."
+            ],
+            "migrationNotes": [
+              "Treat existing records as unverified until reconstructed and rechecked."
+            ],
+            "rollback": "Keep legacy readers and tactical guards; disable unsafe new actions if needed, retain recovery."
+          }
+        },
+        {
+          "optionId": "validated-plans",
+          "title": "Freeze terms and issue validated action plans",
+          "kind": "structural",
+          "summary": "Central validator owns operation-specific permission using frozen terms and fresh observations.",
+          "diagramPaths": {
+            "before": "diagrams/commitment-boundary-before.mmd",
+            "after": "diagrams/commitment-boundary-validated-plans-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "btc-underfunding",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "btc-unconfirmed-create",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "incomplete-zenon-terms",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "nonminimal-contract-push",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "contract-replacement",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Implement the direct guard now and retain it through migration."
+            },
+            {
+              "evidenceId": "cli-offer-command-injection",
+              "effect": "unaffected",
+              "tacticalFixRequired": true,
+              "rationale": "Separate local trust boundary; needs its own fix."
+            },
+            {
+              "evidenceId": "board-inbox-timestamp",
+              "effect": "unaffected",
+              "tacticalFixRequired": true,
+              "rationale": "Separate local trust boundary; needs its own fix."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Centralizes complete terms, frozen identity and operation-specific evidence.",
+              "validationPlan": "Run original regression cases and direct API bypass tests."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Similar node reads; bounded reuse only within an exact fresh plan.",
+              "validationPlan": "Measure preparation/dispatch latency and RPC count on fixed local nodes, including delayed nodes."
+            },
+            {
+              "dimension": "memory",
+              "direction": "unknown",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Small additional retained records per active swap, unmeasured.",
+              "validationPlan": "Compare WASM memory with 1, 10 and 100 active swaps; ensure memory returns after closure."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Explicit stale/incomplete/conflict outcomes; expiry and retries need coverage.",
+              "validationPlan": "Exercise timeout, replacement, stale-plan and retry cases; no duplicate funding."
+            },
+            {
+              "dimension": "operability",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Structured local refusal reasons, no server or secret telemetry.",
+              "validationPlan": "Inspect diagnostic output for actionable reasons and absence of secrets."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Conservative old-record reading and revalidation before new actions.",
+              "validationPlan": "Test old exports and funded records in both initiating-chain orders."
+            },
+            {
+              "dimension": "developer-ergonomics",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "More internal types but one owner of action policy.",
+              "validationPlan": "Enumerate and review every dangerous API consumer against the shared contract."
+            },
+            {
+              "dimension": "rollback",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Retain old readers; disable new writes without losing recovery data.",
+              "validationPlan": "Rehearse downgrade with guards retained and funded records recoverable."
+            }
+          ],
+          "residualRisks": [
+            "Configured node dishonesty and compromised same-origin code remain trusted-base risks.",
+            "A delayed external wallet prompt can outlive observations; freshness rules still required.",
+            "CLI injection and board rendering remain separate fixes."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "wasm/manager.go",
+              "wasm/walletblock.go",
+              "wasm/htlc.go",
+              "wasm/znn/client.go",
+              "ui/src/core/api.ts",
+              "ui/src/core/composables/useSession.ts",
+              "ui/src/components/SwapCard.vue"
+            ],
+            "workPackages": [
+              "Immediate guards and regression cases.",
+              "Complete/frozen terms and action evidence.",
+              "Caller migration and compatibility verification."
+            ],
+            "acceptanceCriteria": [
+              "Unsafe original paths fail before commitment or disclosure.",
+              "Both valid swap orderings and offline recovery remain functional."
+            ],
+            "migrationNotes": [
+              "Treat existing records as unverified until reconstructed and rechecked."
+            ],
+            "rollback": "Keep legacy readers and tactical guards; disable unsafe new actions if needed, retain recovery."
+          }
+        }
+      ],
+      "recommendedOptionId": "validated-plans",
+      "recommendation": "Use validated plans as the target; ship local method guards first. Stop at local guards only with a small stable API and comprehensive entrypoint tests."
+    }
+  ],
+  "openQuestions": [
+    "Confirmation threshold and minimum claim window policy.",
+    "Supported wallet behavior for expired or missing HTLC Unlock.",
+    "Legacy record formats in actual use.",
+    "Measured node latency before plan expiry is set."
+  ]
+}
+

@@ -20,6 +20,10 @@ export function stage(sw: Swap): number {
   if (sw.state === 'redeemed') return sw.settled ? 4 : 3
   if (sw.state === 'refunded' || (sw.state === 'expired' && sw.archived)) return 4
   if (!sw.funding) return 1
+  // Held for a short funding: the contract has money in it, but not the
+  // agreed amount, and the redeem is withheld until a single output covers it.
+  // That is still the funding step, whatever the card's other facts say.
+  if (sw.redeemHeldForShortFunding) return 1
   if (sw.refundable) return 3
   if (sw.leg === 'receive') return sw.secretHex ? 3 : 2
   if (!sw.zenon?.htlcId || !sw.zenon.verified) return 2
@@ -51,6 +55,10 @@ export function nextStep(sw: Swap): string {
   if (!sw.funding) {
     return sw.leg === 'send' ? 'Fund the contract' : 'Waiting for them to fund it'
   }
+  // The button this would name is withheld, so naming it would send the user
+  // looking for something that is not there. What they are waiting for is a
+  // single output that covers the agreed amount; several short ones do not add.
+  if (sw.redeemHeldForShortFunding) return 'Funded short — waiting for a payment of the full amount'
   if (sw.refundable) return 'Timelock passed — refund available'
   if (sw.leg === 'receive') {
     return sw.secretHex ? 'Redeem the Bitcoin' : 'Waiting on the preimage'
@@ -80,6 +88,8 @@ export function waitingOnThem(sw: Swap): boolean {
   if (!sw.contractAddr) return sw.leg === 'send'
   if (sw.state === 'redeemed' || sw.state === 'refunded') return false
   if (!sw.funding) return sw.leg === 'receive'
+  // Kept in step with nextStep: a held short funding is theirs to put right.
+  if (sw.redeemHeldForShortFunding) return true
   if (sw.refundable) return false
   // An HTLC that exists and failed verification is this user's problem to act
   // on, not something to wait out — so only a missing one counts as waiting.

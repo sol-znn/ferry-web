@@ -1,0 +1,9 @@
+flowchart LR
+  Peer["Counterparty data"] --> UI["Vue manual and Auto Mode actions"]
+  Peer --> Session["Session handlers"]
+  UI --> Engine["Go engine with guarded methods"]
+  Session --> Engine
+  Nodes["Configured chain nodes"] --> Engine
+  Engine --> BTC["Bitcoin signing and broadcast"]
+  Engine --> Wallet["Zenon wallet plan and dispatch"]
+

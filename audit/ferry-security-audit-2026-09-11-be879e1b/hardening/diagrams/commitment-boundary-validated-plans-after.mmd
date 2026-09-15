@@ -1,0 +1,11 @@
+flowchart LR
+  Peer["Counterparty data"] --> UI["Vue manual and Auto Mode actions"]
+  Peer --> Session["Session handlers"]
+  UI --> Draft["Go draft state"]
+  Session --> Draft
+  Draft --> Guard["Commitment validator"]
+  Nodes["Configured chain nodes"] --> Guard
+  Guard --> Plan["Frozen terms and short-lived action plan"]
+  Plan --> BTC["Bitcoin signing and broadcast"]
+  Plan --> Wallet["Zenon wallet plan and dispatch"]
+

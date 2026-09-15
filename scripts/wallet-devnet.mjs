@@ -148,13 +148,75 @@ ok(
   audited.zenon?.expirationSeconds > 0,
   JSON.stringify(audited.zenon),
 );
+// B's leg ANSWERS A's Bitcoin funding, and there is none: the contract is a
+// script nobody has paid. Locking ZNN against it is refused, and the card is
+// told why in the same words.
+ok(
+  "but not until their Bitcoin is funded and confirmed",
+  audited.fundingCommitted === false &&
+    (audited.fundingCommitBlocker ?? "").includes("not been seen"),
+  JSON.stringify([audited.fundingCommitted, audited.fundingCommitBlocker]),
+);
+
+console.log("\nsetting up the swap whose Zenon leg goes first");
+
+// The other ordering: D initiates from the Zenon side, so D's HTLC is the
+// LONG leg and is created before any Bitcoin exists. This is the shape whose
+// create can be built with nothing on the Bitcoin chain, which is what makes
+// it the one this script can take apart.
+//
+// D: the initiator, receiving BTC and therefore sending ZNN.
+const d = await call("create", {
+  role: "initiator",
+  leg: "receive",
+  amountSats: 400000,
+  destAddr: BTC_B,
+  zenonSelfAddress: WALLET,
+  zenonPeerAddress: PEER,
+  zenonAmount: "10",
+  settings: S,
+});
+ok("the Zenon-side initiator’s swap is created", !d.error, d.error);
+
+// C: the participant, sending BTC against D's hash.
+const c = await call("create", {
+  role: "participant",
+  leg: "send",
+  amountSats: 400000,
+  destAddr: BTC_A,
+  secretHashHex: d.secretHashHex,
+  zenonSelfAddress: PEER,
+  zenonPeerAddress: WALLET,
+  zenonAmount: "10",
+  settings: S,
+});
+ok("the Bitcoin-side participant’s swap is created", !c.error, c.error);
+
+const builtC = await call("counterparty", { id: c.id, pkhHex: d.key.pkhHex });
+ok("the participant builds the contract", Boolean(builtC.contractHex));
+
+const auditedD = await call("audit", {
+  id: d.id,
+  contractHex: builtC.contractHex,
+});
+ok(
+  "the initiator audits it",
+  !auditedD.error && Boolean(auditedD.contractAddr),
+  auditedD.error,
+);
+ok("and it is our Zenon leg to create", auditedD.zenonHtlcIsOurs === true);
+ok(
+  "with nothing on Bitcoin to wait for",
+  auditedD.fundingCommitted === true && !auditedD.fundingCommitBlocker,
+  JSON.stringify([auditedD.fundingCommitted, auditedD.fundingCommitBlocker]),
+);
 
 console.log("\nthe gate, against the live devnet");
 
 const wallet = { address: WALLET, chainId: 69, nodeUrl: S.znnUrl };
 const sync = await call("walletSync", {
   ...wallet,
-  id: b.id,
+  id: d.id,
   action: "create",
   settings: S,
 });
@@ -167,7 +229,7 @@ ok(
 const wrongAccount = await call("walletSync", {
   ...wallet,
   address: PEER,
-  id: b.id,
+  id: d.id,
   action: "create",
   settings: S,
 });
@@ -181,7 +243,7 @@ ok(
 console.log("\nthe block the extension would be handed");
 
 const plan = await call("walletBlock", {
-  id: b.id,
+  id: d.id,
   action: "create",
   from: wallet.address,
   chainId: wallet.chainId,
@@ -244,7 +306,7 @@ if (!plan.error) {
   ok("keyMaxSize is 32", parseInt(word(3), 16) === 32, word(3));
   ok(
     "the hashlock is this swap’s secret hash",
-    hex.endsWith(audited.secretHashHex),
+    hex.endsWith(auditedD.secretHashHex),
     hex.slice(-64),
   );
 
@@ -254,17 +316,17 @@ if (!plan.error) {
     expiry === plan.expirationTime,
     String(expiry),
   );
-  // B is the participant and the Bitcoin leg is the initiator's, so this leg
-  // must expire BEFORE the Bitcoin contract — by at least the minimum gap.
+  // D is the initiator, so this is the LONG leg: it must expire AFTER the
+  // Bitcoin contract — by at least the minimum gap.
   ok(
-    "the participant’s Zenon leg expires before the Bitcoin locktime",
-    expiry < audited.lockTime,
-    `zenon ${expiry} vs btc ${audited.lockTime}`,
+    "the initiator’s Zenon leg expires after the Bitcoin locktime",
+    expiry > auditedD.lockTime,
+    `zenon ${expiry} vs btc ${auditedD.lockTime}`,
   );
   ok(
     "with at least two hours to spare",
-    audited.lockTime - expiry >= 2 * 3600,
-    `gap ${(audited.lockTime - expiry) / 3600}h`,
+    expiry - auditedD.lockTime >= 2 * 3600,
+    `gap ${(expiry - auditedD.lockTime) / 3600}h`,
   );
 
   console.log(`\n  summary: ${plan.summary}`);
@@ -295,7 +357,7 @@ for (const [label, body, want] of [
   ],
 ]) {
   const r = await call("walletBlock", {
-    id: b.id,
+    id: d.id,
     from: wallet.address,
     chainId: wallet.chainId,
     nodeUrl: wallet.nodeUrl,
@@ -305,6 +367,24 @@ for (const [label, body, want] of [
   ok(
     `${label} is refused`,
     Boolean(r.error) && r.error.includes(want),
+    r.error ?? "no error",
+  );
+}
+
+// And the refusal that is this script's reason for having two swaps: B's
+// create answers A's Bitcoin, which nobody has paid.
+{
+  const r = await call("walletBlock", {
+    id: b.id,
+    action: "create",
+    from: wallet.address,
+    chainId: wallet.chainId,
+    nodeUrl: wallet.nodeUrl,
+    settings: S,
+  });
+  ok(
+    "locking ZNN against Bitcoin that is not funded is refused",
+    Boolean(r.error) && r.error.includes("not locking ZNN yet"),
     r.error ?? "no error",
   );
 }

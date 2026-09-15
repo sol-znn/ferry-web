@@ -53,6 +53,11 @@ export interface KeyView {
 }
 
 /** The other half of the trade. This app reads Zenon state but never writes it. */
+export interface MissingZenonTerm {
+  key: 'selfAddress' | 'peerAddress' | 'amount'
+  reason: string
+}
+
 export interface ZenonLeg {
   htlcId?: string
   selfAddress?: string
@@ -140,6 +145,28 @@ export interface Swap {
   secretArrivesOnZenon: boolean
   /** A contract funded for less than was agreed. */
   fundingShort?: boolean
+  /** The redeem is withheld: the contract is short AND this side's redeem
+   *  would be the first publication of its secret, which is what opens the
+   *  Zenon leg for the counterparty. Computed in Go (Swap.RedeemHeldForShortFunding)
+   *  so the missing button and the engine's refusal are one rule. */
+  redeemHeldForShortFunding?: boolean
+  /** Nothing about the counterparty's Bitcoin funding stands in the way of
+   *  this side creating its Zenon HTLC. False only for the participant in a
+   *  Bitcoin-initiated swap while that funding is missing, short, unconfirmed
+   *  or spent -- and then fundingCommitBlocker says which. Computed in Go
+   *  (Swap.FundingCommitBlocker) so the card's gate and the engine's refusal
+   *  are one rule. */
+  fundingCommitted: boolean
+  fundingCommitBlocker?: string
+  /** Terms of the Zenon leg this swap never recorded, so no HTLC can verify
+   *  against it: which field, and why. The card's repair form is built from
+   *  this rather than from its own reading of the fields, so it and Go cannot
+   *  disagree about what counts as missing (a zero amount does). */
+  missingZenonTerms?: MissingZenonTerm[]
+  /** The funding has been read off its own transaction and pays this swap's
+   *  contract. Until then it is something seen in a listing, not something
+   *  to act on: no Zenon action and no redeem are offered against it. */
+  fundingBound?: boolean
 
   funding?: FundingOutput
   refundTx?: SpendResult
@@ -385,11 +412,18 @@ export interface RebuildRequest {
   destAddr?: string
   feeRate?: number
   secretHex?: string
+  /** Build even when the file does not record what the funding output pays
+   *  (a file from before that was recorded). This page reaches no node, so
+   *  the check cannot run here; a wrong contract yields a transaction the
+   *  network refuses, and nothing more. */
+  allowUnboundFunding?: boolean
 }
 
 export interface RebuildResult {
   /** Decided by the contract and the key, not by what was asked for. */
   action: 'redeem' | 'refund'
+  /** Set when the spend rests on an assumption this page could not check. */
+  warning?: string
   swapId: string
   network: string
   contractAddr: string

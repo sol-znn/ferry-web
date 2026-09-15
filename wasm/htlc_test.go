@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,5 +300,175 @@ func TestOfferRoundTripCarriesNoSecrets(t *testing.T) {
 	}
 	if _, err := DecodeOffer("not-an-offer"); err == nil {
 		t.Error("expected DecodeOffer to reject a non-offer string")
+	}
+}
+
+// The finding: the tokenizer hands back a push's payload whatever opcode
+// carried it, so a hash or key wrapped in OP_PUSHDATA1/2/4 parsed as the right
+// bytes, audited clean, and produced a contract whose redeem this program's
+// own signer then refused under the minimal-push rule -- while the refund
+// branch, run by the counterparty, worked. Every parameter position, every
+// long push opcode: refused at parse, and the canonical script still accepted.
+func TestParseRefusesNonCanonicalPushes(t *testing.T) {
+	refund, redeem := mustKey(t), mustKey(t)
+	secret, hash, _ := NewSecret()
+	locktime := time.Now().Add(48 * time.Hour).Unix()
+	canonical, err := BuildContract(refund.PKH, redeem.PKH, locktime, hash)
+	if err != nil {
+		t.Fatalf("BuildContract: %v", err)
+	}
+	if _, err := ParseContract(canonical); err != nil {
+		t.Fatalf("the canonical contract was refused: %v", err)
+	}
+
+	// The script, as this program lays it out, with each parameter push
+	// written by `push` so a test can choose the opcode.
+	type pusher func(data []byte) []byte
+	minimal := func(data []byte) []byte { return append([]byte{byte(len(data))}, data...) }
+	pushdata1 := func(data []byte) []byte { return append([]byte{txscript.OP_PUSHDATA1, byte(len(data))}, data...) }
+	pushdata2 := func(data []byte) []byte {
+		return append([]byte{txscript.OP_PUSHDATA2, byte(len(data)), 0}, data...)
+	}
+	pushdata4 := func(data []byte) []byte {
+		return append([]byte{txscript.OP_PUSHDATA4, byte(len(data)), 0, 0, 0}, data...)
+	}
+	lockBytes := func() []byte {
+		// Minimal little-endian script number for a positive locktime.
+		var out []byte
+		for v := locktime; v > 0; v >>= 8 {
+			out = append(out, byte(v))
+		}
+		if out[len(out)-1]&0x80 != 0 {
+			out = append(out, 0)
+		}
+		return out
+	}()
+	assemble := func(size, hashP, redeemP, lockP, refundP pusher) []byte {
+		var b []byte
+		b = append(b, txscript.OP_IF, txscript.OP_SIZE)
+		b = append(b, size([]byte{SecretSize})...)
+		b = append(b, txscript.OP_EQUALVERIFY, txscript.OP_SHA256)
+		b = append(b, hashP(hash)...)
+		b = append(b, txscript.OP_EQUALVERIFY, txscript.OP_DUP, txscript.OP_HASH160)
+		b = append(b, redeemP(redeem.PKH)...)
+		b = append(b, txscript.OP_ELSE)
+		b = append(b, lockP(lockBytes)...)
+		b = append(b, txscript.OP_CHECKLOCKTIMEVERIFY, txscript.OP_DROP, txscript.OP_DUP, txscript.OP_HASH160)
+		b = append(b, refundP(refund.PKH)...)
+		b = append(b, txscript.OP_ENDIF, txscript.OP_EQUALVERIFY, txscript.OP_CHECKSIG)
+		return b
+	}
+	if got := assemble(minimal, minimal, minimal, minimal, minimal); !bytes.Equal(got, canonical) {
+		t.Fatalf("the test's assembler does not reproduce BuildContract:\n got %x\nwant %x", got, canonical)
+	}
+
+	positions := []struct {
+		name string
+		with func(p pusher) []byte
+	}{
+		{"secret size", func(p pusher) []byte { return assemble(p, minimal, minimal, minimal, minimal) }},
+		{"secret hash", func(p pusher) []byte { return assemble(minimal, p, minimal, minimal, minimal) }},
+		{"redeem pkh", func(p pusher) []byte { return assemble(minimal, minimal, p, minimal, minimal) }},
+		{"locktime", func(p pusher) []byte { return assemble(minimal, minimal, minimal, p, minimal) }},
+		{"refund pkh", func(p pusher) []byte { return assemble(minimal, minimal, minimal, minimal, p) }},
+	}
+	encodings := []struct {
+		name string
+		p    pusher
+	}{{"OP_PUSHDATA1", pushdata1}, {"OP_PUSHDATA2", pushdata2}, {"OP_PUSHDATA4", pushdata4}}
+	for _, pos := range positions {
+		for _, enc := range encodings {
+			script := pos.with(enc.p)
+			if bytes.Equal(script, canonical) {
+				t.Fatalf("%s via %s produced the canonical script; the test is not testing anything", pos.name, enc.name)
+			}
+			_, err := ParseContract(script)
+			if err == nil {
+				t.Errorf("%s via %s: accepted a non-canonical contract", pos.name, enc.name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "canonical") {
+				t.Errorf("%s via %s: refused, but not for its encoding: %v", pos.name, enc.name, err)
+			}
+		}
+	}
+
+	// And the signer refuses to build a spend of the wrapped script at all --
+	// it parses first, and parsing is where the refusal now lives -- while the
+	// canonical one's goes through. (What standard policy would do to a spend
+	// of the wrapped script is not exercised here: nothing in this program
+	// signs one any more, which is the point.)
+	funding := FundingOutput{TxID: "5ae77294d1bd1dea7fce8b235ae89b80585424aeaa907f181282db9ed9b9fd0a", Value: 100_000}
+	params := &chaincfg.RegressionNetParams
+	if _, err := BuildRedeem(canonical, funding, redeem, secret, regtestDest, 2.0, params); err != nil {
+		t.Fatalf("the canonical contract's redeem was refused: %v", err)
+	}
+	wrapped := assemble(minimal, pushdata1, minimal, minimal, minimal)
+	if _, err := BuildRedeem(wrapped, funding, redeem, secret, regtestDest, 2.0, params); err == nil ||
+		!strings.Contains(err.Error(), "canonical") {
+		t.Errorf("the signer built a spend of the non-canonical contract, or refused it for another reason: %v", err)
+	}
+}
+
+// The canonical rebuild must accept every contract this program itself builds,
+// across the locktime encodings AddInt64 produces: four bytes, four bytes with
+// a sign-padding fifth, and the top of the 32-bit field.
+func TestCanonicalRoundTripAcrossLocktimeWidths(t *testing.T) {
+	refund, redeem := mustKey(t), mustKey(t)
+	_, hash, _ := NewSecret()
+	for _, lock := range []int64{LockTimeThreshold, 0x7fffffff, 0x80000000, MaxLockTime} {
+		contract, err := BuildContract(refund.PKH, redeem.PKH, lock, hash)
+		if err != nil {
+			t.Fatalf("locktime %#x: BuildContract: %v", lock, err)
+		}
+		got, err := ParseContract(contract)
+		if err != nil {
+			t.Errorf("locktime %#x: the canonical contract was refused: %v", lock, err)
+			continue
+		}
+		if got.LockTime != lock {
+			t.Errorf("locktime %#x round-tripped as %#x", lock, got.LockTime)
+		}
+	}
+}
+
+// A refused contract changes nothing: the swap keeps whatever it had, so a
+// bad contract offered after a good one cannot displace it, and a bad one
+// offered first leaves nothing for a Zenon create to be built against.
+func TestARefusedContractLeavesTheSwapAlone(t *testing.T) {
+	m := newManager(t, &stubBackend{feeRate: 2})
+	refund := mustKey(t)
+	_, hash, _ := NewSecret()
+	sw, err := m.Create(CreateParams{Role: RoleParticipant, Leg: LegReceive, AmountSats: 400_000,
+		DestAddr: regtestDest, SecretHashHex: hex.EncodeToString(hash)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	locktime := time.Now().Add(48 * time.Hour).Unix()
+	good, err := BuildContract(refund.PKH, sw.Key.PKH, locktime, hash)
+	if err != nil {
+		t.Fatalf("BuildContract: %v", err)
+	}
+	// The same terms, the hash push written with OP_PUSHDATA1.
+	i := bytes.Index(good, append([]byte{0x20}, hash...))
+	bad := append(append(append([]byte{}, good[:i]...), txscript.OP_PUSHDATA1), good[i:]...)
+
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(bad)); err == nil {
+		t.Fatal("a non-canonical contract was audited clean")
+	}
+	got, _ := m.Store.Load(sw.ID)
+	if len(got.Contract) != 0 || got.ContractAddr != "" || got.State != StateDraft {
+		t.Errorf("a refused contract changed the swap: contract %x addr %q state %q",
+			got.Contract, got.ContractAddr, got.State)
+	}
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(good)); err != nil {
+		t.Fatalf("the canonical contract was refused: %v", err)
+	}
+	if _, err := m.AuditContract(sw.ID, hex.EncodeToString(bad)); err == nil {
+		t.Fatal("a non-canonical contract was audited clean after a good one")
+	}
+	got, _ = m.Store.Load(sw.ID)
+	if !bytes.Equal(got.Contract, good) {
+		t.Errorf("a refused contract displaced the accepted one: %x", got.Contract)
 	}
 }

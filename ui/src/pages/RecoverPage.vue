@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, ref} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {UploadIcon} from '@lucide/vue'
 import {
   Badge,
@@ -39,6 +39,13 @@ const fileText = ref('')
 const destAddr = ref('')
 const feeRate = ref('')
 const secretHex = ref('')
+// A file from before the funding's script was recorded cannot be checked
+// offline against what the output pays. Building it anyway is the user's call,
+// asked for explicitly and only once the refusal has said why.
+const allowUnbound = ref(false)
+const unboundRefusal = computed(() =>
+  /does not record what the funding output pays/.test(error.value),
+)
 
 const busy = ref(false)
 const error = ref('')
@@ -115,6 +122,10 @@ async function onFile(ev: Event) {
   result.value = null
   error.value = ''
 }
+// Consent is about one file. A different file, loaded or pasted, starts over.
+watch(fileText, () => {
+  allowUnbound.value = false
+})
 
 async function rebuild() {
   error.value = ''
@@ -126,6 +137,7 @@ async function rebuild() {
       destAddr: destAddr.value.trim(),
       feeRate: Number(feeRate.value || 0),
       secretHex: secretHex.value.trim(),
+      allowUnboundFunding: allowUnbound.value,
     })
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -308,6 +320,19 @@ async function rebuild() {
           />
         </div>
 
+        <label
+          v-if="unboundRefusal || allowUnbound"
+          class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm"
+        >
+          <input v-model="allowUnbound" type="checkbox" class="mt-0.5" />
+          <span>
+            Build the refund anyway. This file does not record what the funding output pays, and
+            this page cannot ask a node, so the refund is built for the contract in the file. A
+            refund reveals nothing: if that is not the contract that was funded, the network refuses
+            the transaction and nothing is lost. A redeem is never built this way, because a redeem
+            carries the preimage.
+          </span>
+        </label>
         <Button class="justify-self-start" :disabled="busy || !fileText.trim()" @click="rebuild">
           Rebuild and sign
         </Button>
@@ -321,11 +346,13 @@ async function rebuild() {
         <Badge :variant="result.action === 'redeem' ? 'success' : 'warning'">
           {{ result.action }}
         </Badge>
+        <Badge v-if="result.warning" variant="warning">built on an assumption</Badge>
         <Badge v-if="result.notYet" variant="destructive">
           not valid for another {{ result.notYet }}
         </Badge>
       </CardHeader>
       <CardContent class="grid gap-4">
+        <p v-if="result.warning" class="text-sm text-warning">{{ result.warning }}</p>
         <DataList dense>
           <DataRow label="swap">
             <span class="font-mono text-xs">{{ result.swapId }} ({{ result.network }})</span>

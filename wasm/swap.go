@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -55,10 +56,18 @@ type Swap struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
-	Network   string    `json:"network"`
-	Role      Role      `json:"role"`
-	Leg       Leg       `json:"leg"`
-	State     State     `json:"state"`
+	// Version counts saves. Every call into this module runs on a goroutine of
+	// its own and most of them load a record, decide something, and save it;
+	// two of those interleaved would let the second save erase the first --
+	// a refresh recording funding, then an audit that loaded before it saving
+	// a contract over it, and the freeze on a funded contract with it. So Save
+	// refuses a record whose version is not the one in the store, and the
+	// loser is told to look again rather than allowed to overwrite.
+	Version int64  `json:"version,omitempty"`
+	Network string `json:"network"`
+	Role    Role   `json:"role"`
+	Leg     Leg    `json:"leg"`
+	State   State  `json:"state"`
 
 	// Secret is set when this side is the initiator, or once it has been
 	// extracted from the counterparty's on-chain redeem. It is the one field
@@ -360,6 +369,218 @@ func (s *Swap) SecretArrivesOnZenon() bool {
 	return s.ZenonHtlcIsOurs() && s.Role == RoleParticipant
 }
 
+// RedeemRevealsSecret reports whether this side's Bitcoin redeem would be the
+// FIRST publication of the secret. That is the initiator on the receiving leg:
+// the secret was generated here and has been nowhere else, and the redeem puts
+// it in the spending transaction's signature script, on a public chain -- which
+// is exactly what lets the counterparty unlock the Zenon HTLC this user locked
+// for them.
+//
+// The participant on the same leg is the opposite case. Their secret came off
+// the counterparty's Zenon unlock, so it is already public and their redeem
+// gives nothing further away.
+func (s *Swap) RedeemRevealsSecret() bool {
+	return s.Leg == LegReceive && s.Role == RoleInitiator
+}
+
+// FundingShort reports that the contract holds less than was agreed.
+func (s *Swap) FundingShort() bool {
+	return s.Funding != nil && s.Funding.Value < s.AmountSats
+}
+
+// RedeemHeldForShortFunding is the one rule behind both the missing button and
+// the refusal in Manager.Redeem: a short contract must not be redeemed while
+// the redeem is what would publish the secret. Redeeming it trades the full
+// Zenon amount, which the counterparty can then unlock, for a partial Bitcoin
+// payment whose size the counterparty chose. Auto Mode reaches the same line
+// and stops there.
+func (s *Swap) RedeemHeldForShortFunding() bool {
+	return s.FundingShort() && s.RedeemRevealsSecret()
+}
+
+// commitConfirmations is how deep the counterparty's Bitcoin funding has to be
+// before this side locks ZNN against it.
+//
+// One block is the threshold that matters: a payment in the mempool can be
+// replaced by its sender for the cost of a slightly higher fee, so locking ZNN
+// against one lets an initiator who already holds the secret take the ZNN and
+// keep the BTC. Once mined, replacing it means mining a competing block. A
+// deeper requirement buys protection against a reorg at the cost of ten minutes
+// a block, on a swap that runs for a day or two; the constant is here so that
+// trade can be changed in one place.
+const commitConfirmations = 1
+
+// ZenonCreateWaitsOnBtc reports whether this side's Zenon HTLC is created
+// AGAINST the counterparty's Bitcoin funding -- the participant's leg, in a
+// swap the Bitcoin side initiated. That is the one shape where locking ZNN is a
+// response to money already on the other chain, and so the one shape where it
+// must wait for that money to be real. When the Zenon leg is the initiator's it
+// goes first by design and there is no Bitcoin funding to wait for.
+func (s *Swap) ZenonCreateWaitsOnBtc() bool {
+	return s.ZenonHtlcIsOurs() && s.BitcoinLegIsInitiators()
+}
+
+// FundingCommitBlocker says why the counterparty's Bitcoin funding is not yet
+// something to lock ZNN against, or "" when it is, judged from the record as of
+// the last refresh. Empty for every shape where nothing is waited on. The card
+// shows it in place of the create; planCreate refuses on it and then re-reads
+// the chain, because a record is only as current as the last poll.
+func (s *Swap) FundingCommitBlocker() string {
+	if !s.ZenonCreateWaitsOnBtc() {
+		return ""
+	}
+	f := s.Funding
+	switch {
+	case f == nil:
+		return "their Bitcoin funding has not been seen at the contract yet"
+	case s.State == StateRedeemed || s.State == StateRefunded:
+		return "the contract output has already been spent"
+	case s.State == StateExpired:
+		return "the Bitcoin contract's timelock has passed, so their funding is theirs to take back"
+	case s.LockTime > 0 && s.LockTime-time.Now().Unix() < int64((MinLegGap+MinLegRemaining)/time.Second):
+		// A Zenon leg created now would have to expire before the Bitcoin
+		// contract by MinLegGap and still live MinLegRemaining, and there is no
+		// longer room for both. planCreate refuses this against the chain's
+		// clock; the record refuses it against the browser's, which is enough
+		// to withhold a button and a command.
+		return fmt.Sprintf("the Bitcoin locktime is %s away, too close to fit a Zenon leg that "+
+			"expires before it", time.Duration(s.LockTime-time.Now().Unix())*time.Second)
+	case f.Value < s.AmountSats:
+		return fmt.Sprintf("the contract holds %d sat but %d sat was agreed", f.Value, s.AmountSats)
+	case !f.Confirmed:
+		return "their funding is still in the mempool, where the sender can replace it"
+	case f.Confirmations < commitConfirmations:
+		return fmt.Sprintf("their funding has %d of the %d confirmation%s this needs",
+			f.Confirmations, commitConfirmations, plural(commitConfirmations))
+	}
+	return ""
+}
+
+// FundingCommitted is FundingCommitBlocker's verdict as a bool: true whenever
+// nothing stands between this side and creating its Zenon HTLC on account of
+// the Bitcoin funding -- including every shape where that funding is not
+// waited on at all.
+func (s *Swap) FundingCommitted() bool { return s.FundingCommitBlocker() == "" }
+
+// MissingZenonTerms lists the terms of the Zenon leg this swap never recorded
+// and so cannot check an HTLC against: the address the HTLC must pay (this
+// user's own for an incoming HTLC, the counterparty's for one this user
+// creates) and the agreed amount. The addresses and the amount are optional at
+// creation because they are routinely filled in later; they are not optional
+// for a verdict. An expectation left blank is not a check switched off but a
+// check with no answer -- an HTLC paying anybody at all would pass it -- so
+// every route to `verified` refuses while this is non-empty, a verdict stored
+// by an earlier release against incomplete terms is withdrawn on load, and
+// planUnlock will not pack the preimage over one.
+func (s *Swap) MissingZenonTerms() []MissingTerm {
+	var missing []MissingTerm
+	if s.ZenonHtlcIsOurs() {
+		if strings.TrimSpace(s.Zenon.PeerAddress) == "" {
+			missing = append(missing, MissingTerm{"peerAddress",
+				"this swap records no Zenon address for the counterparty, the one your HTLC must pay"})
+		}
+	} else if strings.TrimSpace(s.Zenon.SelfAddress) == "" {
+		missing = append(missing, MissingTerm{"selfAddress",
+			"this swap records no Zenon address of your own, the one their HTLC must pay"})
+	}
+	amount := strings.TrimSpace(s.Zenon.AmountDisplay)
+	switch {
+	case amount == "":
+		missing = append(missing, MissingTerm{"amount", "this swap records no agreed Zenon amount"})
+	case zeroAmount(amount):
+		// A lower bound of zero is no lower bound: one base unit would pass it.
+		missing = append(missing, MissingTerm{"amount", "this swap's agreed Zenon amount is zero"})
+	}
+	return missing
+}
+
+// MissingTerm is one term of the Zenon leg a swap never recorded: which field,
+// so the card can offer the right input, and why, so a refusal can say.
+type MissingTerm struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
+// missingReasons is the reasons alone, for a message.
+func missingReasons(ms []MissingTerm) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.Reason)
+	}
+	return out
+}
+
+// zeroAmount reports whether a plain-decimal amount is nothing at all.
+func zeroAmount(s string) bool { return strings.Trim(s, "0.") == "" }
+
+// withdrawStaleVerdict takes back a `verified` that was reached against
+// incomplete terms. The release that had this finding could persist such a
+// verdict, and a record survives an upgrade in localStorage and in a backup;
+// the flag is what planUnlock trusts, so it cannot be allowed to outlive the
+// rule. Applied on every load, idempotently, and said once in the log.
+func (s *Swap) withdrawStaleVerdict() {
+	if !s.Zenon.Verified {
+		return
+	}
+	missing := s.MissingZenonTerms()
+	if len(missing) == 0 {
+		return
+	}
+	s.Zenon.Verified = false
+	s.Zenon.VerifyPending = false
+	s.Zenon.VerifyError = "verified by an earlier release against incomplete terms: " +
+		strings.Join(missingReasons(missing), "; ") + ". Add them to the swap and verify again"
+	msg := "withdrew a verification reached against incomplete terms; the HTLC must be verified again"
+	if !loggedOnce(s, msg) {
+		s.log("%s", msg)
+	}
+}
+
+// ContractCommitted reports whether anything has been staked on this swap's
+// Bitcoin contract as it stands -- money seen or sent to its address, a Zenon
+// HTLC created against its locktime, a refund pre-signed to spend its output
+// -- and says what. Past that point the contract's bytes are the swap's
+// identity: a "corrected" contract arriving afterwards, over a session or by
+// hand, would be stored beside a funding outpoint that still pays the OLD
+// script, and every spend built from then on would be for the wrong one. So
+// AuditContract and SetCounterpartyPKH treat a byte-identical resend as
+// nothing new and refuse anything else once this is true.
+func (s *Swap) ContractCommitted() (bool, string) {
+	switch {
+	case len(s.Contract) == 0:
+		return false, ""
+	case s.Funding != nil:
+		return true, "funding has been seen at its address"
+	case s.FundingBroadcast != nil:
+		return true, "a payment to its address has been sent from this browser"
+	case s.RefundTx != nil:
+		return true, "a refund of it has been pre-signed"
+	case strings.TrimSpace(s.Zenon.HtlcID) != "":
+		return true, "a Zenon HTLC exists against its locktime"
+	case s.State != StateDraft && s.State != StateAwaitingFunding:
+		return true, "the swap is past waiting for funding"
+	}
+	return false, ""
+}
+
+// FundingBound reports that the funding output has been read off its own
+// transaction and pays this swap's contract. It is what releases anything
+// built or offered against the funding: a redeem, a pre-signed refund, a
+// Zenon leg locked in answer to it. A script recorded is not enough on its
+// own; it has to be THIS contract's, judged now, against the contract the
+// record holds now.
+func (s *Swap) FundingBound() bool {
+	if s.Funding == nil || s.Funding.PkScriptHex == "" || len(s.Contract) == 0 {
+		return false
+	}
+	params, err := s.Params()
+	if err != nil {
+		return false
+	}
+	bound, err := s.Funding.bindsTo(s.Contract, params)
+	return err == nil && bound
+}
+
 // BitcoinLegIsInitiators reports whether this swap's Bitcoin contract is the
 // initiator's leg, i.e. the one that must expire LAST. It is the mirror of
 // ZenonLegIsInitiators: exactly one leg of a swap is the initiator's.
@@ -547,7 +768,45 @@ func DecodeOffer(s string) (*Offer, error) {
 	if o.AmountSats <= 0 {
 		return nil, fmt.Errorf("offer's amountSats is %d, which is not an amount", o.AmountSats)
 	}
+	if err := canonicalZenonAmount(o.ZenonAmt); err != nil {
+		return nil, fmt.Errorf("offer's %w", err)
+	}
+	if o.ZenonAmt != "" && zeroAmount(o.ZenonAmt) {
+		return nil, errors.New("offer's Zenon amount is zero, which is not an amount")
+	}
+	// The address and the token are checked here too, not only when the form
+	// they are copied into is submitted: an offer is a stranger's input, and
+	// every field of it that can reach a printed command is held to the shape
+	// of the thing it claims to be at the door it comes in by.
+	if o.ZenonAddr != "" {
+		if _, err := znn.ParseAddress(o.ZenonAddr); err != nil {
+			return nil, fmt.Errorf("offer's Zenon address: %w", err)
+		}
+	}
+	if o.ZenonToken != "" {
+		if _, err := znn.ParseTokenStandard(o.ZenonToken); err != nil {
+			return nil, fmt.Errorf("offer's Zenon token: %w", err)
+		}
+	}
 	return &o, nil
+}
+
+// zenonAmountShape is what a Zenon amount may look like: digits, optionally a
+// point and more digits. Nothing else -- not a sign, not an exponent, not a
+// thousands separator, and above all nothing that is not a character of a
+// number. The amount is a term of the trade that reaches a printed command,
+// and a control character inside it is how a stranger's offer becomes a line
+// in somebody's terminal.
+var zenonAmountShape = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// canonicalZenonAmount accepts an absent amount or a plain decimal, and
+// nothing else. Checked where amounts come in -- a form, an offer -- rather
+// than where they go out, so every later use can trust the shape.
+func canonicalZenonAmount(s string) error {
+	if s == "" || zenonAmountShape.MatchString(s) {
+		return nil
+	}
+	return fmt.Errorf("the Zenon amount %q is not a plain decimal like 10 or 1.25", s)
 }
 
 // Opposite returns the leg the receiver of an offer should take.

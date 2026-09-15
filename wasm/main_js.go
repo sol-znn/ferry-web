@@ -22,7 +22,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"syscall/js"
 )
 
@@ -89,7 +92,9 @@ func call(api *API) func(js.Value, []js.Value) any {
 							resolve.Invoke(string(errorJSON(panicErr(r))))
 						}
 					}()
-					resolve.Invoke(string(api.Call(method, body)))
+					resolve.Invoke(string(underStoreLock(func() []byte {
+						return api.Call(method, body)
+					})))
 				}()
 				return nil
 			}))
@@ -137,3 +142,136 @@ func (e panicError) Error() string {
 }
 
 func panicErr(v any) error { return panicError{v: v} }
+
+// underStoreLock runs one call while holding the browser's Web Lock for this
+// instance's records, and returns its answer.
+//
+// Every call loads a record, decides something, and saves it, and the
+// store's own lock and version check keep two such calls in ONE module from
+// interleaving. Two tabs are two modules over the same localStorage, with a
+// mutex each and no way to see the other's, so a stale audit in one tab could
+// still save over a funding the other had just recorded. The Web Locks API is
+// the one primitive the browser offers that spans tabs of an origin, so every
+// call is made under it: one at a time, for this instance's swaps, across every
+// tab. The cost is that calls queue behind each other -- a refresh in one tab
+// holds an audit in another for as long as its node takes -- which is what
+// correctness costs here.
+//
+// The lock is named for the storage prefix, so the development and production
+// instances on one origin do not wait on each other. Where the API is missing
+// and there is no document -- Node running the smoke test -- the call runs
+// unlocked: one module, one tab, and the store's own lock is the whole story.
+// A browser without the API is refused rather than served unlocked.
+func underStoreLock(fn func() []byte) []byte {
+	nav := js.Global().Get("navigator")
+	locks := js.Undefined()
+	if nav.Type() == js.TypeObject {
+		locks = nav.Get("locks")
+	}
+	if locks.Type() != js.TypeObject || locks.Get("request").Type() != js.TypeFunction {
+		// No lock. Outside a browser -- Node running the smoke test -- there
+		// is one module and one tab, and the store's own lock is the whole
+		// story. Inside a browser without the API there could be two tabs,
+		// and running unlocked would be the race this exists to close; so a
+		// browser without it is refused rather than served.
+		if js.Global().Get("document").Type() == js.TypeObject {
+			return errorJSON(errors.New("this browser has no Web Locks API, which Ferry needs to " +
+				"keep two tabs from acting on one swap at once. Use a current browser"))
+		}
+		return fn()
+	}
+	// The answer travels through settle, which takes the first answer and
+	// drops any other. Three paths below can answer -- the work, a panic in
+	// it, and the request's rejection handler -- and a second send on a full
+	// channel from a browser callback would block the event loop for good.
+	out := make(chan []byte, 1)
+	var settled sync.Once
+	settle := func(answer []byte) { settled.Do(func() { out <- answer }) }
+	// The callback must return a promise and not block: it is invoked from the
+	// browser's event loop, and Go code that blocks there deadlocks the module.
+	// The work runs on a goroutine; the promise it resolves is what the browser
+	// holds the lock open for.
+	var holder js.Func
+	var holderDone sync.Once
+	releaseHolder := func() { holderDone.Do(holder.Release) }
+	// Set once the lock has been granted and the work is under way, at which
+	// point the request's outcome no longer decides the call's answer.
+	var granted atomic.Bool
+	holder = js.FuncOf(func(js.Value, []js.Value) any {
+		granted.Store(true)
+		var exec js.Func
+		exec = js.FuncOf(func(_ js.Value, args []js.Value) any {
+			release := args[0]
+			go func() {
+				defer exec.Release()
+				defer releaseHolder()
+				defer func() {
+					if r := recover(); r != nil {
+						settle(errorJSON(panicErr(r)))
+					}
+					release.Invoke()
+				}()
+				settle(fn())
+			}()
+			return nil
+		})
+		return js.Global().Get("Promise").New(exec)
+	})
+	// The request itself can fail, and then the holder is never invoked and
+	// nothing above would ever answer. A manager may refuse outright -- the
+	// specification allows a SecurityError -- or reject the request later,
+	// once the holder is running, when another context takes the lock with
+	// "steal". The first is answered as a refusal. The second is not: the
+	// work is under way or done, its save may already have landed, and the
+	// only true answer is the work's own. Either way the rejection is handled
+	// here rather than left for the page to report as unhandled.
+	//
+	// Go keeps a callback registered until it is released, so the request is
+	// given a handler for each outcome and whichever fires lets both go; a
+	// handler left behind on every successful call would be memory the tab
+	// never got back.
+	var fulfilled, refused js.Func
+	var handlersDone sync.Once
+	releaseHandlers := func() {
+		handlersDone.Do(func() {
+			fulfilled.Release()
+			refused.Release()
+		})
+	}
+	fulfilled = js.FuncOf(func(js.Value, []js.Value) any {
+		releaseHandlers()
+		return nil
+	})
+	refused = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer releaseHandlers()
+		if granted.Load() {
+			return nil
+		}
+		defer releaseHolder()
+		reason := "no reason given"
+		if len(args) > 0 && args[0].Type() != js.TypeUndefined && args[0].Type() != js.TypeNull {
+			reason = js.Global().Get("String").Invoke(args[0]).String()
+		}
+		settle(errorJSON(fmt.Errorf("the browser refused the lock Ferry takes on its swaps (%s). "+
+			"Nothing was changed; reload the page and try again", reason)))
+		return nil
+	})
+	// A manager that throws instead of returning a promise is answered the
+	// same way, and the callbacks it never took are let go. One that grants
+	// and then throws is a late rejection by another route, and gets the
+	// same answer: none, because the work's is on its way.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				releaseHandlers()
+				if granted.Load() {
+					return
+				}
+				releaseHolder()
+				settle(errorJSON(panicErr(r)))
+			}
+		}()
+		locks.Call("request", "ferry:"+StorageKeyPrefix(), holder).Call("then", fulfilled, refused)
+	}()
+	return <-out
+}

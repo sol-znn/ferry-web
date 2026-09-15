@@ -1,0 +1,3999 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ferry security audit — developer handoff</title><style>body{margin:0;background:#f4f6f8;color:#16202b;font:16px/1.6 system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:42px 24px}h1,h2,h3,h4{line-height:1.25}h1{font-size:36px;margin-bottom:8px}h2{font-size:25px}h3{margin-top:28px}a{color:#005fa3;text-decoration-thickness:1px;text-underline-offset:3px}article,.panel{background:white;border:1px solid #dbe1e7;border-radius:10px;padding:24px;margin:24px 0}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 8px;border-bottom:1px solid #dbe1e7;vertical-align:top}th{background:#eef2f6}.table-wrap{overflow:auto}.badge{font-size:13px;font-weight:700;display:inline-block;border-radius:6px;padding:3px 9px;background:#eef2f6}.high{background:#ffeadf;color:#813500}.medium{background:#fff5cc;color:#705800}.low{background:#e4f1ff;color:#064c7c}.muted{color:#536171;font-size:14px}.notice{border-left:4px solid #ba7a00;padding:12px 18px;background:#fff8e4}.summary{font-size:18px}pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f7fa;padding:16px;border-radius:6px;font:12px/1.5 ui-monospace,monospace}code{font-family:ui-monospace,monospace}details{border:1px solid #dbe1e7;border-radius:6px;margin:10px 0;padding:10px 14px}summary{cursor:pointer;font-weight:600}li{margin:7px 0}nav a{display:inline-block;margin-right:18px}footer{font-size:13px;color:#536171}article{scroll-margin-top:20px}@media print{body{background:white}main{padding:0;max-width:none}article,.panel{border:0;padding:0}article{break-before:page}details{display:block}a{color:inherit}pre{font-size:10px}.table-wrap{overflow:visible}}</style></head><body><main>
+<h1>Ferry security audit</h1><p class="summary">Developer handoff · 11 September 2026</p>
+<p>Audited revision: be879e1bd61a9922ee58e16d32095bafa43bdf6e</p>
+<nav><a href="report.md">Full Markdown report</a><a href="hardening/hardening.md">Repair proposal</a><a href="findings.json">Structured findings</a><a href="exports/results.sarif">SARIF</a></nav>
+<section class="panel"><h2>7 findings · 4 high · 2 medium · 1 low</h2>
+<p>All 152 tracked files were source-reviewed. The overall assessment is partial because runtime and wallet integration validation remain incomplete. No fixes were made.</p>
+<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Priority</th><th>Finding</th><th>Source</th></tr></thead><tbody>
+<tr><td>F01</td><td><span class="badge high">HIGH / P1</span></td><td><a href="#finding-1">Auto Mode reveals the secret for an underfunded Bitcoin payment</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L945-L951">wasm/manager.go:945</a></td></tr>
+<tr><td>F02</td><td><span class="badge high">HIGH / P1</span></td><td><a href="#finding-2">Zenon funds can be locked against replaceable Bitcoin funding</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletblock.go#L235-L239">wasm/walletblock.go:235</a></td></tr>
+<tr><td>F03</td><td><span class="badge high">HIGH / P1</span></td><td><a href="#finding-3">Missing Zenon terms can verify an HTLC that pays the attacker</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/znn/client.go#L450-L453">wasm/znn/client.go:450</a></td></tr>
+<tr><td>F04</td><td><span class="badge high">HIGH / P1</span></td><td><a href="#finding-4">Contract audit accepts a script that blocks the victim&#x27;s redeem branch</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/htlc.go#L179-L182">wasm/htlc.go:179</a></td></tr>
+<tr><td>F05</td><td><span class="badge medium">MEDIUM / P2</span></td><td><a href="#finding-5">A session peer can replace the script of an already-funded swap</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L438-L441">wasm/manager.go:438</a></td></tr>
+<tr><td>F06</td><td><span class="badge medium">MEDIUM / P2</span></td><td><a href="#finding-6">An offer amount becomes shell syntax in copied CLI commands</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/zenon-commands.ts#L94-L98">ui/src/core/zenon-commands.ts:94</a></td></tr>
+<tr><td>F07</td><td><span class="badge low">LOW / P3</span></td><td><a href="#finding-7">A crafted take timestamp disables the shared board inbox</a></td><td><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/BoardInbox.vue#L94">ui/src/components/BoardInbox.vue:94</a></td></tr>
+</tbody></table></div></section>
+<section class="notice"><strong>Validation limits</strong>
+<p>The reported paths were validated through source review. The inbox formatter reproduced RangeError in isolation. No complete application, supported Go test suite, live wallet, production deployment or end-to-end chain exploit was executed. The compiler and offline dependencies blocked Go checks.</p>
+<p>One unconfirmed follow-up remains: whether a supported wallet publishes Unlock data for an expired or missing Zenon HTLC before rejection. It is not counted among the seven findings.</p>
+</section>
+<section class="panel"><h2>Repair priorities</h2>
+<ul><li>F01–F04: enforce safe commitment and disclosure prerequisites, complete expected terms, and canonical scripts.</li><li>F05: freeze committed contract identity and bind the real funding output before signing.</li><li>F06–F07: validate and encode shell arguments; reject invalid timestamps and isolate rendering errors.</li><li>The repair proposal compares immediate guards with centralized action validation. Preserve recovery and both initiating-chain orderings.</li></ul>
+</section>
+<article id="finding-1"><span class="badge high">HIGH / P1</span><h2>F01 · Auto Mode reveals the secret for an underfunded Bitcoin payment</h2>
+<p>A Bitcoin participant can pay less than the agreed amount and still make a Zenon initiator&#x27;s Auto Mode redeem. The redeem publishes the secret, allowing the participant to take the full Zenon payment.</p>
+<p class="muted">Finding ID: csf_ce888e80f75eec0598f376d0 · CWE-841 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L945-L951">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`Refresh()` reads the peer-funded contract&#x27;s UTXOs and stores an underpayment as `Funding` and `StateFunded`; it only logs the mismatch with `AmountSats`. `canRedeem` treats any funding record as sufficient, and `autoStep()` adds confirmation but no amount check. `Manager.Redeem()` then signs and broadcasts with the secret without enforcing the agreed consideration.</p>
+<h3>Attack path and conditions</h3>
+<p>The attacker funds the correct Bitcoin HTLC with a confirmed output substantially below AmountSats but large enough to cover its spend fee and dust limit. Refresh adopts that output as Funding and merely logs the shortfall. SwapCard.canRedeem checks for funding and a secret, and autoStep only adds a confirmation check. Manager.Redeem also omits the agreed-amount comparison, so Auto Mode signs and broadcasts a redeem that publishes the initiator&#x27;s secret. The attacker can then unlock the full Zenon HTLC.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+p
+a
+r
+t
+i
+c
+i
+p
+a
+n
+t
+ 
+t
+r
+a
+d
+i
+n
+g
+ 
+w
+i
+t
+h
+ 
+a
+ 
+Z
+e
+n
+o
+n
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+w
+h
+o
+ 
+h
+a
+s
+ 
+e
+n
+a
+b
+l
+e
+d
+ 
+A
+u
+t
+o
+ 
+M
+o
+d
+e
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+t
+r
+a
+d
+i
+n
+g
+ 
+c
+o
+u
+n
+t
+e
+r
+p
+a
+r
+t
+y
+ 
+c
+o
+n
+t
+r
+o
+l
+s
+ 
+i
+t
+s
+ 
+p
+a
+y
+m
+e
+n
+t
+ 
+v
+a
+l
+u
+e
+;
+ 
+t
+h
+e
+ 
+n
+o
+r
+m
+a
+l
+ 
+A
+u
+t
+o
+ 
+M
+o
+d
+e
+ 
+p
+a
+t
+h
+ 
+a
+d
+v
+a
+n
+c
+e
+s
+ 
+o
+n
+ 
+a
+ 
+c
+o
+n
+f
+i
+r
+m
+e
+d
+ 
+u
+n
+d
+e
+r
+p
+a
+y
+m
+e
+n
+t
+ 
+w
+i
+t
+h
+ 
+n
+o
+ 
+e
+x
+t
+r
+a
+ 
+c
+o
+m
+p
+r
+o
+m
+i
+s
+e
+ 
+r
+e
+q
+u
+i
+r
+e
+d
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+ 
+r
+e
+c
+e
+i
+v
+e
+s
+ 
+a
+ 
+s
+m
+a
+l
+l
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+p
+a
+y
+m
+e
+n
+t
+ 
+w
+h
+i
+l
+e
+ 
+t
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+c
+o
+l
+l
+e
+c
+t
+s
+ 
+t
+h
+e
+ 
+f
+u
+l
+l
+ 
+a
+g
+r
+e
+e
+d
+ 
+Z
+e
+n
+o
+n
+ 
+p
+a
+y
+m
+e
+n
+t
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent followed the selected UTXO through `Refresh()`, the automatic UI action, and `Manager.Redeem()` to `BuildRedeem()` and `Broadcast()`. A confirmed output below `AmountSats` but above the fee and dust floor reaches the secret-bearing transaction. The visible shortfall warning and continued search for a larger output do not stop this action.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>The UI exposes fundingShort and displays a destructive badge.</li><li>Refresh keeps searching for a larger output while the contract is underfunded.</li><li>Auto Mode requires a confirmed funding output, and BuildRedeem rejects amounts too small to spend. Neither control requires the agreed amount.</li></ul>
+<h3>Remediation</h3>
+<p>Enforce Funding.Value &gt;= AmountSats in the core before any first preimage disclosure or counter-leg commitment. Make Auto Mode wait on that invariant; preserve an explicitly separate recovery path for reclaiming a partial payment without silently releasing an unrevealed secret.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>With Auto Mode on, a confirmed spendable underpayment must not produce a redeem or reveal the initiator&#x27;s secret.</li><li>Check the same invariant through the direct WASM redeem API, including stale or replaced funding.</li><li>A fully funded, confirmed swap must still complete in both role/direction combinations; preserve explicit recovery when the secret is already public.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Underpayment becomes funded state</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L533-L574">wasm/manager.go:533</a></p>
+<p>The peer chooses the output value; the selected short payment becomes `Funding` before its mismatch is merely logged.</p>
+<pre><code>	if fundingIsOpen(sw) {
+		utxos, err := backend.AddressUTXOs(ctx, sw.ContractAddr)
+		if err != nil {
+			return nil, fmt.Errorf(&quot;look up contract address: %w&quot;, err)
+		}
+		best := pickFunding(utxos, sw.AmountSats)
+		changed := best != nil &amp;&amp; (sw.Funding == nil || best.Value &gt; sw.Funding.Value)
+		if changed {
+			if sw.Funding == nil {
+				sw.State = StateFunded
+				sw.log(&quot;funding seen: %s:%d for %d sat (confirmed=%v)&quot;,
+					best.TxID, best.Vout, best.Value, best.Status.Confirmed)
+			} else {
+				sw.log(&quot;a larger output appeared at the contract address: switching funding from &quot;+
+					&quot;%s:%d (%d sat) to %s:%d (%d sat) and re-signing the refund&quot;,
+					sw.Funding.TxID, sw.Funding.Vout, sw.Funding.Value,
+					best.TxID, best.Vout, best.Value)
+				sw.RefundTx = nil // it spent the output we just stopped using
+			}
+			sw.Funding = &amp;FundingOutput{
+				TxID:  best.TxID,
+				Vout:  best.Vout,
+				Value: best.Value,
+				// The listing already carries the block, so the first depth is
+				// free. Height alone is not depth -- that needs the tip, which
+				// trackFundingDepth below fetches.
+				Confirmed:   best.Status.Confirmed,
+				BlockHeight: best.Status.BlockHeight,
+			}
+
+			// Only on a change: this block runs on every refresh while the
+			// contract is short, and repeating these lines would bury the
+			// event log in copies of themselves.
+			if len(utxos) &gt; 1 {
+				sw.log(&quot;NOTE: the contract address holds %d unspent outputs. Only the one above is &quot;+
+					&quot;spent by a redeem or refund; anything else must be recovered separately with &quot;+
+					&quot;`ferry recover` after editing the funding outpoint.&quot;, len(utxos))
+			}
+			if sw.Funding.Value &lt; sw.AmountSats {
+				sw.log(&quot;WARNING: contract holds %d sat but %d sat was agreed; do not proceed until &quot;+
+					&quot;this is resolved&quot;, sw.Funding.Value, sw.AmountSats)
+			}</code></pre></details>
+<details><summary>Any funding enables redeem</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/SwapCard.vue#L327-L332">ui/src/components/SwapCard.vue:327</a></p>
+<p>The UI checks existence of funding and a secret, so the short-payment flag does not gate redeem.</p>
+<pre><code>const canRedeem = computed(
+  () =&gt;
+    props.swap.leg === &#x27;receive&#x27; &amp;&amp;
+    Boolean(props.swap.funding) &amp;&amp;
+    Boolean(props.swap.secretHex) &amp;&amp;
+    props.swap.state !== &#x27;redeemed&#x27;,</code></pre></details>
+<details><summary>Auto Mode dispatches after confirmation</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/SwapCard.vue#L737-L744">ui/src/components/SwapCard.vue:737</a></p>
+<p>Confirmation is required, but the amount is not compared before `api.redeem()`.</p>
+<pre><code>  if (canRedeem.value &amp;&amp; destForSpend.value &amp;&amp; props.swap.funding?.confirmed) {
+    if (!autoMode.claim(props.swap.id, &#x27;redeem&#x27;)) return
+    await runAndTell(&#x27;redeemed the Bitcoin contract, which publishes the preimage on Bitcoin&#x27;, () =&gt;
+      api.redeem(props.swap.id, destForSpend.value, settings.value),
+    )
+    if (error.value) autoMode.halt(props.swap.id, error.value)
+  }
+}</code></pre></details>
+<details><summary>Core signs and broadcasts without amount check</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L944-L974">wasm/manager.go:944</a></p>
+<p>The core accepts any existing funding and publishes a transaction carrying the secret.</p>
+<pre><code>	}
+	if sw.Funding == nil {
+		return nil, errors.New(&quot;no funding output has been seen yet; refresh first&quot;)
+	}
+	if len(sw.Secret) == 0 {
+		return nil, errors.New(&quot;the secret is not known yet, so this contract cannot be redeemed&quot;)
+	}
+	destAddr, err = payoutAddress(sw, destAddr)
+	if err != nil {
+		return nil, err
+	}
+	if now := time.Now().Unix(); now &gt;= sw.LockTime {
+		sw.log(&quot;WARNING: redeeming after the timelock at %s. The counterparty can broadcast &quot;+
+			&quot;their refund now, so this is a race -- if it loses, treat the Bitcoin leg as gone.&quot;,
+			time.Unix(sw.LockTime, 0).UTC().Format(time.RFC3339))
+	}
+	params, err := sw.Params()
+	if err != nil {
+		return nil, err
+	}
+	feeRate, err := backend.FeeRate(ctx, 3)
+	if err != nil {
+		feeRate = 2.0
+	}
+	spend, err := BuildRedeem(sw.Contract, *sw.Funding, sw.Key, sw.Secret, destAddr, feeRate, params)
+	if err != nil {
+		return nil, err
+	}
+	txid, err := backend.Broadcast(ctx, spend.RawHex)
+	if err != nil {
+		return nil, fmt.Errorf(&quot;broadcast redeem: %w&quot;, err)</code></pre></details>
+</article>
+<article id="finding-2"><span class="badge high">HIGH / P1</span><h2>F02 · Zenon funds can be locked against replaceable Bitcoin funding</h2>
+<p>When Bitcoin initiates the swap, Ferry offers to lock the participant&#x27;s Zenon funds as soon as an unconfirmed Bitcoin output appears. The initiator can replace that payment, then use the secret it already knows to collect the Zenon HTLC.</p>
+<p class="muted">Finding ID: csf_76b4938b8a19d6738fdc70fe · CWE-841 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletblock.go#L235-L239">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`zenonLegPossible` checks only the existence of a `Funding` record for Bitcoin-initiated swaps and explicitly accepts mempool funding. The resulting Zenon action reaches `planCreate()`, whose guard requires an audited script but never checks funding, confirmations, value, or whether the output remains unspent. Auto Mode can prepare and send that plan to the wallet.</p>
+<h3>Attack path and conditions</h3>
+<p>Refresh exposes an unconfirmed Bitcoin output as Funding. SwapCard opens the Zenon controls whenever Funding exists, expressly including a mempool payment. planCreate checks the audited contract and expiry ordering but never checks Funding or its confirmation state. ZenonWallet Auto Mode prepares the create and requests the user&#x27;s ordinary wallet signature. After the victim locks Zenon, the attacker replaces the Bitcoin funding transaction and uses the secret it generated to unlock the victim&#x27;s Zenon HTLC.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+w
+h
+o
+ 
+c
+o
+n
+t
+r
+o
+l
+s
+ 
+t
+h
+e
+ 
+f
+u
+n
+d
+i
+n
+g
+ 
+t
+r
+a
+n
+s
+a
+c
+t
+i
+o
+n
+ 
+a
+n
+d
+ 
+i
+t
+s
+ 
+r
+e
+p
+l
+a
+c
+e
+m
+e
+n
+t
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+R
+e
+p
+l
+a
+c
+i
+n
+g
+ 
+o
+n
+e
+&
+#
+x
+2
+7
+;
+s
+ 
+o
+w
+n
+ 
+u
+n
+c
+o
+n
+f
+i
+r
+m
+e
+d
+ 
+f
+u
+n
+d
+i
+n
+g
+ 
+i
+s
+ 
+w
+i
+t
+h
+i
+n
+ 
+t
+h
+e
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+&
+#
+x
+2
+7
+;
+s
+ 
+o
+r
+d
+i
+n
+a
+r
+y
+ 
+c
+a
+p
+a
+b
+i
+l
+i
+t
+y
+;
+ 
+t
+h
+e
+ 
+s
+u
+p
+p
+o
+r
+t
+e
+d
+ 
+w
+a
+l
+l
+e
+t
+ 
+f
+l
+o
+w
+ 
+e
+x
+p
+o
+s
+e
+s
+ 
+t
+h
+e
+ 
+u
+n
+s
+a
+f
+e
+ 
+n
+e
+x
+t
+ 
+s
+t
+e
+p
+ 
+w
+i
+t
+h
+o
+u
+t
+ 
+d
+e
+f
+e
+a
+t
+i
+n
+g
+ 
+a
+u
+t
+h
+e
+n
+t
+i
+c
+a
+t
+i
+o
+n
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+k
+e
+e
+p
+s
+ 
+i
+t
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+a
+n
+d
+ 
+c
+o
+l
+l
+e
+c
+t
+s
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+Z
+e
+n
+o
+n
+ 
+p
+a
+y
+m
+e
+n
+t
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent traced `zenonLegPossible` through the create action and `ZenonWallet.autoRun()` to `planCreate()`. All of `planCreate()` was inspected: address, token, positive amount, expiry ordering, and wallet-chain checks are present, but Bitcoin funding safety is absent. Existing devnet test setup also intentionally creates a participant HTLC with no funding; source evidence only, not an executed test.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>The wallet still requests the user&#x27;s signature.</li><li>The funding depth badge identifies unconfirmed payments.</li><li>Auto Bitcoin redemption separately requires confirmation and documents the same double-spend attack; that protection is absent from Zenon creation.</li></ul>
+<h3>Remediation</h3>
+<p>When Bitcoin is the initiating leg, require current, fully funded, sufficiently confirmed and unspent Bitcoin funding in the core before creating the Zenon HTLC. Recheck before submitting a prepared create, and make Auto Mode wait until the condition holds.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>For Bitcoin-initiated swaps, reject Zenon Create with missing, unconfirmed, underfunded, spent, or mismatched Bitcoin funding.</li><li>Revalidate immediately before wallet dispatch and invalidate plans when funding changes.</li><li>Verify the Zenon-initiated ordering remains able to create its first leg without Bitcoin funding.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Funding existence enables the Zenon leg</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/SwapCard.vue#L242-L247">ui/src/components/SwapCard.vue:242</a></p>
+<p>The initiating Bitcoin leg needs a funding object, but `confirmed` is not checked.</p>
+<pre><code>const zenonLegPossible = computed(
+  () =&gt;
+    !props.swap.btcLegIsInitiators ||
+    Boolean(props.swap.funding) ||
+    Boolean(props.swap.zenon?.htlcId),
+)</code></pre></details>
+<details><summary>Automatic wallet preparation and signing</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/ZenonWallet.vue#L251-L267">ui/src/components/ZenonWallet.vue:251</a></p>
+<p>Auto Mode progresses through the available action to prepare and sign.</p>
+<pre><code>async function autoRun() {
+  if (!props.auto || busy.value || walletSending.value || plan.value) return
+  // Connecting is left to the user, and deliberately. Syrius approves a site in
+  // a window of its own, and a page that asks for that on load — before anybody
+  // has touched it, possibly for several swaps at once — is a page that gets
+  // dismissed. Extensions tend to want a real gesture for it anyway. So Auto
+  // Mode drives the steps and the one connection stays a button; the card goes
+  // on offering it, and this picks up the moment it is done.
+  if (!walletConnected.value) return
+  if (!autoMode.claim(props.swap.id, `zenon:${props.action}`)) return
+  await prepare()
+  if (error.value || !plan.value) {
+    autoMode.halt(props.swap.id, error.value || `could not build the ${props.action} block`)
+    return
+  }
+  await sign()
+  if (error.value) autoMode.halt(props.swap.id, error.value)</code></pre></details>
+<details><summary>Create requires a script but no safe funding</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletblock.go#L224-L240">wasm/walletblock.go:224</a></p>
+<p>The engine checks ownership and contract presence without establishing that the peer&#x27;s Bitcoin is committed.</p>
+<pre><code>	if !sw.ZenonHtlcIsOurs() {
+		return errors.New(&quot;the counterparty sends ZNN on this swap, so they create the Zenon &quot; +
+			&quot;HTLC. There is nothing for you to create&quot;)
+	}
+	if sw.Zenon.HtlcID != &quot;&quot; {
+		return fmt.Errorf(&quot;this swap already has a Zenon HTLC (%s). Creating a second one would &quot;+
+			&quot;lock a second lot of ZNN that only expiry can return&quot;, sw.Zenon.HtlcID)
+	}
+	// The counterparty&#x27;s Bitcoin contract is what the Zenon expiry has to be
+	// ordered against, and it is also the thing that has to be audited before
+	// any ZNN moves. Both are the same precondition.
+	if len(sw.Contract) == 0 {
+		return errors.New(&quot;the Bitcoin contract has not been audited yet. Audit it first: the &quot; +
+			&quot;Zenon expiry is computed from its locktime, and locking ZNN against a contract you &quot; +
+			&quot;have not checked is the one move this app will not help you make&quot;)
+	}
+</code></pre></details>
+<details><summary>Build the funded Zenon account block</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletblock.go#L297-L334">wasm/walletblock.go:297</a></p>
+<p>The agreed Zenon amount is encoded into the Create plan after the missing Bitcoin guard.</p>
+<pre><code>	}
+	if amount.Sign() &lt;= 0 {
+		return fmt.Errorf(&quot;the agreed amount %q is not a positive number&quot;, sw.Zenon.AmountDisplay)
+	}
+
+	// hashType 1 is SHA-256, which is what Bitcoin&#x27;s OP_SHA256 requires. The
+	// other value the contract takes is SHA3, and an HTLC created with it is
+	// one the Bitcoin side can never produce a matching preimage for.
+	data, err := znn.PackCreate(hashLocked, expiration, znn.HashTypeSHA256, SecretSize, sw.SecretHash)
+	if err != nil {
+		return err
+	}
+
+	// The counterparty will settle this leg by unlocking it, and the contract
+	// pays hashLocked rather than the caller — which is what lets them do it
+	// from a wallet with no HTLC support. Unless they have opted out of that,
+	// in which case they need to unlock from the payee account itself, and it
+	// is worth knowing now rather than at settlement.
+	if allowed, perr := mgr.Znn.ProxyUnlockAllowed(ctx, peer); perr == nil &amp;&amp; !allowed {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+			&quot;%s has denied proxy unlock, so only that account itself can unlock this HTLC. &quot;+
+				&quot;Make sure the counterparty can sign from it.&quot;, peer))
+	}
+
+	b := plan.Block
+	b.Amount = amount.String()
+	b.TokenStandard = token
+	b.Data = base64.StdEncoding.EncodeToString(data)
+
+	plan.HashLocked = peer
+	plan.ExpirationTime = expiration
+	plan.ExpiresAt = utcTime(expiration)
+	plan.AmountDisplay = sw.Zenon.AmountDisplay
+	plan.TokenSymbol = tok.Symbol
+	plan.Summary = fmt.Sprintf(&quot;Lock %s %s to %s until %s, redeemable with the preimage of %s.&quot;,
+		sw.Zenon.AmountDisplay, tok.Symbol, peer, plan.ExpiresAt,
+		hex.EncodeToString(sw.SecretHash))
+	return nil</code></pre></details>
+</article>
+<article id="finding-3"><span class="badge high">HIGH / P1</span><h2>F03 · Missing Zenon terms can verify an HTLC that pays the attacker</h2>
+<p>Leaving the optional own Zenon address blank disables the recipient comparison. Ferry can mark an attacker-payable HTLC as verified and send an Unlock containing the victim&#x27;s secret. A missing agreed amount similarly skips the amount comparison.</p>
+<p class="muted">Finding ID: csf_7d1966111fc33778db6991d3 · CWE-754 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/znn/client.go#L450-L453">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`Manager.Create()` accepts empty Zenon addresses and stores optional amount text. For an incoming HTLC, `zenonVerifyParams()` copies `SelfAddress` into `ExpectRecipient`; `VerifyHtlc()` runs that comparison only when nonempty. `zenonExpectations()` leaves `MinAmount` unset for a blank amount, which also disables comparison. `VerifyZenon()` can persist `Verified`, and `planUnlock()` relies on it to encode the preimage; the wallet sync path also returns without binding an empty payout address.</p>
+<h3>Attack path and conditions</h3>
+<p>Create permits a blank ZenonSelfAddress. For an incoming Zenon leg, zenonVerifyParams derives ExpectRecipient from that blank value. Client.Verify skips the recipient comparison when the expectation is empty, so an attacker-created HTLC with the correct token, amount, hash and expiry but an attacker-controlled hashLocked address verifies successfully. Connecting a wallet later does not repair this: checkWalletAgainstSwap returns immediately for unlock when self is blank. planUnlock then encodes the secret and requests publication, which pays the HTLC&#x27;s attacker-controlled recipient.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+Z
+e
+n
+o
+n
+ 
+p
+a
+r
+t
+i
+c
+i
+p
+a
+n
+t
+ 
+t
+r
+a
+d
+i
+n
+g
+ 
+w
+i
+t
+h
+ 
+a
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+w
+h
+o
+s
+e
+ 
+s
+w
+a
+p
+ 
+w
+a
+s
+ 
+c
+r
+e
+a
+t
+e
+d
+ 
+w
+i
+t
+h
+o
+u
+t
+ 
+a
+ 
+Z
+e
+n
+o
+n
+ 
+s
+e
+l
+f
+ 
+a
+d
+d
+r
+e
+s
+s
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+n
+o
+r
+m
+a
+l
+ 
+c
+r
+e
+a
+t
+i
+o
+n
+ 
+f
+o
+r
+m
+ 
+m
+a
+k
+e
+s
+ 
+t
+h
+e
+s
+e
+ 
+f
+i
+e
+l
+d
+s
+ 
+o
+p
+t
+i
+o
+n
+a
+l
+.
+ 
+A
+ 
+t
+r
+a
+d
+i
+n
+g
+ 
+c
+o
+u
+n
+t
+e
+r
+p
+a
+r
+t
+y
+ 
+c
+a
+n
+ 
+s
+u
+p
+p
+l
+y
+ 
+a
+n
+ 
+o
+t
+h
+e
+r
+w
+i
+s
+e
+ 
+m
+a
+t
+c
+h
+i
+n
+g
+ 
+H
+T
+L
+C
+ 
+w
+i
+t
+h
+o
+u
+t
+ 
+c
+o
+m
+p
+r
+o
+m
+i
+s
+i
+n
+g
+ 
+t
+h
+e
+ 
+n
+o
+d
+e
+;
+ 
+e
+x
+p
+l
+o
+i
+t
+a
+t
+i
+o
+n
+ 
+r
+e
+q
+u
+i
+r
+e
+s
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+ 
+t
+o
+ 
+o
+m
+i
+t
+ 
+t
+h
+e
+ 
+e
+x
+p
+e
+c
+t
+e
+d
+ 
+r
+e
+c
+i
+p
+i
+e
+n
+t
+ 
+o
+r
+ 
+a
+m
+o
+u
+n
+t
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+g
+e
+t
+s
+ 
+i
+t
+s
+ 
+o
+w
+n
+ 
+Z
+e
+n
+o
+n
+ 
+d
+e
+p
+o
+s
+i
+t
+ 
+b
+a
+c
+k
+ 
+a
+n
+d
+ 
+l
+e
+a
+r
+n
+s
+ 
+t
+h
+e
+ 
+p
+r
+e
+i
+m
+a
+g
+e
+ 
+n
+e
+e
+d
+e
+d
+ 
+t
+o
+ 
+t
+a
+k
+e
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent followed optional input through the stored expectations to both conditional checks and the persisted verdict, then to `PackUnlock()`. With the correct hash, token and expiry but `hashLocked` set to the attacker&#x27;s address, an empty expected recipient does not produce a problem. The configured-address and amount-conversion checks protect populated fields but do not close the absent-field path.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>A supplied self address is validated and a mismatching HTLC recipient is rejected.</li><li>A wallet connected before form creation can prefill the field.</li><li>The attack requires the supported blank-address creation path; it does not bypass a correctly pinned recipient.</li></ul>
+<h3>Remediation</h3>
+<p>Require a pinned recipient before verifying an incoming Zenon leg or exposing a secret. For records created with a blank address, explicitly bind the intended recipient from the connected wallet and reverify the HTLC before permitting unlock.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>An incoming HTLC must remain unverified when expected recipient or positive amount is absent, including manual and session discovery.</li><li>A matching token/hash/expiry with an attacker recipient must be refused before Unlock or first-secret disclosure.</li><li>Connecting a wallet after creation must not silently adopt an attacker-observed recipient as the agreed destination.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Empty Zenon addresses accepted</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L220-L237">wasm/manager.go:220</a></p>
+<p>Only nonempty addresses are parsed, allowing a draft with no own payout identity.</p>
+<pre><code>	// The three Zenon fields are all optional here -- the addresses are routinely
+	// filled in later and a blank token means ZNN -- but a value that IS given has
+	// to be the kind of thing the field asks for. A Bitcoin address, a Zenon
+	// address and a Zenon token standard are all bech32, and the last two start
+	// with the same letter, which is exactly the shape of accident a paste between
+	// similar-looking fields produces.
+	zenonSelf := strings.TrimSpace(p.ZenonSelfAddress)
+	if zenonSelf != &quot;&quot; {
+		if _, err := znn.ParseAddress(zenonSelf); err != nil {
+			return nil, fmt.Errorf(&quot;your Zenon address: %w&quot;, err)
+		}
+	}
+	zenonPeer := strings.TrimSpace(p.ZenonPeerAddress)
+	if zenonPeer != &quot;&quot; {
+		if _, err := znn.ParseAddress(zenonPeer); err != nil {
+			return nil, fmt.Errorf(&quot;their Zenon address: %w&quot;, err)
+		}
+	}</code></pre></details>
+<details><summary>Copy optional address into verification</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L1074-L1082">wasm/manager.go:1074</a></p>
+<p>For the incoming leg the blank own address becomes a blank expected recipient.</p>
+<pre><code>	// Checking &quot;recipient is me&quot; against an HTLC this user created themselves
+	// would fail every time, and would skip the check that actually matters
+	// there: that it pays the counterparty.
+	if sw.ZenonHtlcIsOurs() {
+		want.ExpectRecipient = sw.Zenon.PeerAddress
+		want.ExpectSender = sw.Zenon.SelfAddress
+	} else {
+		want.ExpectRecipient = sw.Zenon.SelfAddress
+		want.ExpectSender = sw.Zenon.PeerAddress</code></pre></details>
+<details><summary>Blank amount leaves no lower bound</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L1120-L1133">wasm/manager.go:1120</a></p>
+<p>The minimum amount is computed only for nonempty agreed text.</p>
+<pre><code>	if sw.Zenon.AmountDisplay != &quot;&quot; {
+		agreed := sw.Zenon.AgreedToken()
+		if tok, terr := m.Znn.GetToken(ctx, agreed); terr != nil {
+			want.AmountUncheckable = fmt.Sprintf(&quot;could not read token %s from the node: %v&quot;,
+				agreed, terr)
+		} else if amt, cerr := decimalToBaseUnits(sw.Zenon.AmountDisplay, tok.Decimals); cerr != nil {
+			want.AmountUncheckable = fmt.Sprintf(&quot;the agreed amount %q could not be interpreted: %v&quot;,
+				sw.Zenon.AmountDisplay, cerr)
+		} else {
+			want.MinAmount = amt
+		}
+	}
+	return want
+}</code></pre></details>
+<details><summary>Absent expectations skip comparisons</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/znn/client.go#L450-L473">wasm/znn/client.go:450</a></p>
+<p>An empty expected payee or nil amount is treated as a disabled check rather than incomplete verification.</p>
+<pre><code>	if want.ExpectRecipient != &quot;&quot; &amp;&amp; !strings.EqualFold(info.HashLocked, want.ExpectRecipient) {
+		problems = append(problems, fmt.Sprintf(
+			&quot;hashLocked address is %s, expected %s&quot;, info.HashLocked, want.ExpectRecipient))
+	}
+	if want.ExpectSender != &quot;&quot; &amp;&amp; !strings.EqualFold(info.TimeLocked, want.ExpectSender) {
+		problems = append(problems, fmt.Sprintf(
+			&quot;timeLocked address is %s, expected %s&quot;, info.TimeLocked, want.ExpectSender))
+	}
+	if want.AmountUncheckable != &quot;&quot; {
+		problems = append(problems, fmt.Sprintf(
+			&quot;the agreed amount could not be checked (%s). A skipped check reads exactly like a &quot;+
+				&quot;passed one, so this is a refusal: fix the node or the agreed amount and verify again&quot;,
+			want.AmountUncheckable))
+		incomplete++
+	} else if want.MinAmount != nil {
+		amt, ok := new(big.Int).SetString(info.Amount, 10)
+		if !ok {
+			problems = append(problems, fmt.Sprintf(&quot;amount %q is not a number&quot;, info.Amount))
+		} else if amt.Cmp(want.MinAmount) &lt; 0 {
+			problems = append(problems, fmt.Sprintf(
+				&quot;amount %s is below the agreed %s&quot;, amt.String(), want.MinAmount.String()))
+		}
+	}
+	if want.Now &gt; 0 &amp;&amp; want.MinRemaining &gt; 0 {</code></pre></details>
+<details><summary>Persist successful verification</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L1225-L1244">wasm/manager.go:1225</a></p>
+<p>If no other term fails, the swap receives a verified verdict despite the skipped terms.</p>
+<pre><code>	sw.Zenon.VerifyPending = verr != nil &amp;&amp; znn.CheckIncomplete(verr)
+	if verr != nil {
+		sw.Zenon.Verified = false
+		sw.Zenon.VerifyError = verr.Error()
+		if !repeat {
+			sw.log(&quot;Zenon HTLC %s FAILED verification: %v&quot;, htlcID, verr)
+		}
+	} else {
+		sw.Zenon.Verified = true
+		sw.Zenon.VerifyError = &quot;&quot;
+		if !repeat {
+			sw.log(&quot;Zenon HTLC %s verified: hashlock, parties, amount and expiry all match (it is the %s leg)&quot;,
+				htlcID, legOwner(sw.ZenonLegIsInitiators()))
+		}
+	}
+	if err := m.Store.Save(sw); err != nil {
+		return nil, nil, err
+	}
+	return sw, info, verr
+}</code></pre></details>
+<details><summary>Verified status permits preimage encoding</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletblock.go#L356-L383">wasm/walletblock.go:356</a></p>
+<p>The prior verdict authorizes `PackUnlock`; the summary even falls back to the entry&#x27;s recipient when no own address is stored.</p>
+<pre><code>	// Verification is not a formality here. Unlocking publishes the preimage,
+	// which is the one secret that keeps both legs bound together — doing it
+	// against an HTLC nobody has checked hands the counterparty the Bitcoin leg
+	// for whatever the Zenon entry happens to contain.
+	if !sw.Zenon.Verified {
+		return errors.New(&quot;this swap&#x27;s Zenon HTLC has not passed verification. Unlocking &quot; +
+			&quot;publishes the preimage, which is what lets the counterparty take your Bitcoin — so &quot; +
+			&quot;check the HTLC really holds the agreed token, amount and expiry first&quot;)
+	}
+	id, err := hex.DecodeString(htlcID)
+	if err != nil {
+		return fmt.Errorf(&quot;the stored HTLC id %q is not hex: %w&quot;, htlcID, err)
+	}
+	data, err := znn.PackUnlock(id, sw.Secret)
+	if err != nil {
+		return err
+	}
+
+	// The contract pays hashLocked — this user&#x27;s own address — whoever makes
+	// the call, which is what lets a wallet holding nothing settle this leg.
+	// Whether that address still permits it, and what it means when the signer
+	// is somebody else, is the sync gate&#x27;s business; see walletsync.go.
+	payee := strings.TrimSpace(sw.Zenon.SelfAddress)
+
+	plan.Block.Data = base64.StdEncoding.EncodeToString(data)
+	plan.HtlcID = htlcID
+	plan.Summary = fmt.Sprintf(&quot;Unlock HTLC %s with the preimage, paying its ZNN to %s. &quot;+
+		&quot;This publishes the preimage on Zenon.&quot;, htlcID, orElse(payee, &quot;the address in the entry&quot;))</code></pre></details>
+<details><summary>Wallet sync does not repair missing recipient</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/walletsync.go#L283-L301">wasm/walletsync.go:283</a></p>
+<p>The empty-payee path returns without establishing that the HTLC pays this user.</p>
+<pre><code>				&quot;wrong account: this swap&#x27;s Zenon leg belongs to %s and the wallet has %s &quot;+
+					&quot;selected. Switch the account in the extension&#x27;s settings, then reconnect&quot;,
+				self, out.Address))
+		}
+
+	case &quot;unlock&quot;:
+		// An unlock may come from any account, because the contract pays the
+		// address in the entry rather than the caller. Unless that address has
+		// turned the behaviour off, in which case it is the only account that
+		// can make the call at all.
+		if self == &quot;&quot; || strings.EqualFold(self, out.Address) {
+			return
+		}
+		allowed, perr := mgr.Znn.ProxyUnlockAllowed(ctx, self)
+		switch {
+		case perr != nil:
+			out.Unchecked = append(out.Unchecked, fmt.Sprintf(
+				&quot;the wallet would sign from %s while the ZNN goes to %s, and whether that address &quot;+
+					&quot;still permits being paid by another account could not be read from the node &quot;+</code></pre></details>
+</article>
+<article id="finding-4"><span class="badge high">HIGH / P1</span><h2>F04 · Contract audit accepts a script that blocks the victim&#x27;s redeem branch</h2>
+<p>A Bitcoin initiator can send a nonminimal push encoding that passes Ferry&#x27;s contract audit but fails its later redeem validation. The Zenon participant may commit funds to the matching HTLC while its normal Bitcoin claim is unusable; the attacker can still use the refund branch.</p>
+<p class="muted">Finding ID: csf_e23fbf39e7af8d30856cf5e6 · CWE-20 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/htlc.go#L179-L182">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`ParseContract()` records each token&#x27;s opcode and data but compares opcodes only at fixed template positions. Dynamic hash and pubkey pushes are accepted based on their decoded length, and numeric values are checked separately without requiring canonical push opcodes. `AuditContract()` accepts those parsed terms. Later `BuildRedeem()` runs the script with `StandardVerifyFlags`, which enforces minimal pushes in the executing branch.</p>
+<h3>Attack path and conditions</h3>
+<p>ParseContract validates fixed opcode positions and the lengths of pushed data, but not the push opcodes at the dynamic positions. The attacker can replace the direct 32-byte secret-hash push in the OP_IF branch with OP_PUSHDATA1 followed by length 32 and the same hash. The parser still returns the expected hash, recipient and locktime, so AuditContract accepts it and the victim can lock Zenon. After the attacker unlocks Zenon, the victim&#x27;s BuildRedeem fails local execution under StandardVerifyFlags because that branch executes a nonminimal data push. The attacker&#x27;s refund branch skips the offending OP_IF push.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+s
+u
+p
+p
+l
+y
+i
+n
+g
+ 
+t
+h
+e
+ 
+r
+e
+d
+e
+e
+m
+ 
+s
+c
+r
+i
+p
+t
+ 
+t
+h
+a
+t
+ 
+a
+ 
+Z
+e
+n
+o
+n
+ 
+p
+a
+r
+t
+i
+c
+i
+p
+a
+n
+t
+ 
+a
+u
+d
+i
+t
+s
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+s
+u
+p
+p
+l
+i
+e
+s
+ 
+t
+h
+e
+ 
+c
+o
+n
+t
+r
+a
+c
+t
+ 
+t
+h
+r
+o
+u
+g
+h
+ 
+t
+h
+e
+ 
+n
+o
+r
+m
+a
+l
+ 
+m
+a
+n
+u
+a
+l
+ 
+o
+r
+ 
+s
+e
+s
+s
+i
+o
+n
+ 
+h
+a
+n
+d
+o
+f
+f
+,
+ 
+a
+n
+d
+ 
+t
+h
+e
+ 
+m
+a
+l
+f
+o
+r
+m
+e
+d
+ 
+r
+e
+p
+r
+e
+s
+e
+n
+t
+a
+t
+i
+o
+n
+ 
+p
+r
+e
+s
+e
+r
+v
+e
+s
+ 
+t
+h
+e
+ 
+e
+x
+p
+e
+c
+t
+e
+d
+ 
+k
+e
+y
+s
+,
+ 
+h
+a
+s
+h
+ 
+a
+n
+d
+ 
+t
+i
+m
+e
+l
+o
+c
+k
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+c
+l
+a
+i
+m
+ 
+i
+s
+ 
+b
+l
+o
+c
+k
+e
+d
+ 
+b
+y
+ 
+F
+e
+r
+r
+y
+ 
+a
+n
+d
+ 
+s
+t
+a
+n
+d
+a
+r
+d
+ 
+t
+r
+a
+n
+s
+a
+c
+t
+i
+o
+n
+ 
+p
+o
+l
+i
+c
+y
+ 
+w
+h
+i
+l
+e
+ 
+t
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+c
+a
+n
+ 
+c
+l
+a
+i
+m
+ 
+Z
+e
+n
+o
+n
+ 
+a
+n
+d
+ 
+l
+a
+t
+e
+r
+ 
+r
+e
+f
+u
+n
+d
+ 
+t
+h
+e
+ 
+B
+i
+t
+c
+o
+i
+n
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent checked the exact parser and audit path and the pinned btcd v0.24.2 script engine in the local module cache. Replacing the direct 32-byte secret-hash push with `OP_PUSHDATA1 0x20` preserves the decoded tokens accepted by Ferry. The redeem branch executes this nonminimal push and fails `ScriptVerifyMinimalData`; the refund branch skips it. A prepared isolated regression did not run because required dependency versions were unavailable offline.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li><li>The demonstrated claim is failure of Ferry&#x27;s normal redeem and standard relay policy, not absolute Bitcoin consensus unspendability; a specially constructed nonstandard spend mined outside ordinary relay may be possible.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>Malformed, truncated, extended and wrong-sized templates are rejected.</li><li>Contracts generated by BuildContract use canonical ScriptBuilder encodings.</li><li>Bitcoin consensus may permit a specially mined nonstandard redeem, but Ferry refuses to construct it and normal relay policy is the operational path.</li></ul>
+<h3>Remediation</h3>
+<p>Rebuild the canonical contract from parsed fields and require byte-for-byte equality, or enforce canonical push opcodes at every dynamic position. Add malformed-push cases for each branch and verify accepted scripts remain redeemable and refundable under StandardVerifyFlags.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>Reject nonminimal OP_PUSHDATA1/2/4 encodings at every dynamic contract position during audit.</li><li>Require audited scripts to equal the canonical rebuild and verify both branch spends under the same flags used by the signer.</li><li>Ensure a rejected contract cannot enable Zenon Create or replace a previously accepted contract.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Only fixed template opcodes are compared</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/htlc.go#L148-L168">wasm/htlc.go:148</a></p>
+<p>Raw peer bytes are tokenized, but dynamic push opcodes are outside the fixed opcode checks.</p>
+<pre><code>	for tk.Next() {
+		if len(tokens) == contractTemplateLen {
+			return nil, errors.New(&quot;script is longer than the atomic swap template&quot;)
+		}
+		tokens = append(tokens, scriptToken{op: tk.Opcode(), data: tk.Data()})
+	}
+	if err := tk.Err(); err != nil {
+		return nil, fmt.Errorf(&quot;malformed script: %w&quot;, err)
+	}
+	if len(tokens) != contractTemplateLen {
+		return nil, fmt.Errorf(&quot;script has %d elements, the atomic swap template has %d&quot;,
+			len(tokens), contractTemplateLen)
+	}
+	for idx, op := range contractTemplate {
+		if tokens[idx].op != op {
+			return nil, fmt.Errorf(&quot;script does not match the atomic swap template at element %d&quot;, idx)
+		}
+	}
+
+	secretSize, err := scriptNum(tokens[2], maxScriptNumLen)
+	if err != nil {</code></pre></details>
+<details><summary>Dynamic pushes are validated by payload</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/htlc.go#L179-L199">wasm/htlc.go:179</a></p>
+<p>A nonminimal push preserves the expected hash and pubkey payload lengths and therefore survives parsing.</p>
+<pre><code>	}
+	pkhRedeem := tokens[9].data
+	if len(pkhRedeem) != 20 {
+		return nil, errors.New(&quot;redeem pubkey hash is not 20 bytes&quot;)
+	}
+	locktime, err := scriptNum(tokens[11], maxCLTVScriptNumLen)
+	if err != nil {
+		return nil, fmt.Errorf(&quot;bad locktime: %w&quot;, err)
+	}
+	// A contract whose locktime is not a timestamp is not one this tool can
+	// reason about: every deadline it reports, and the refund it pre-signs,
+	// assume the refund branch opens at a wall-clock moment.
+	if err := validLockTime(locktime); err != nil {
+		return nil, fmt.Errorf(&quot;contract %w&quot;, err)
+	}
+	pkhRefund := tokens[16].data
+	if len(pkhRefund) != 20 {
+		return nil, errors.New(&quot;refund pubkey hash is not 20 bytes&quot;)
+	}
+
+	return &amp;ContractDetails{</code></pre></details>
+<details><summary>Parsed contract accepted under the agreed keys</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L403-L421">wasm/manager.go:403</a></p>
+<p>Audit checks parsed identity and hash, so the alternate encoding can satisfy those checks.</p>
+<pre><code>	details, err := ParseContract(contract)
+	if err != nil {
+		return nil, err
+	}
+	params, err := sw.Params()
+	if err != nil {
+		return nil, err
+	}
+
+	if !bytes.Equal(details.PkhRedeem, sw.Key.PKH) {
+		return nil, fmt.Errorf(&quot;contract lets %s redeem, not this swap&#x27;s key %s: &quot;+
+			&quot;you would not be able to claim these funds&quot;,
+			hex.EncodeToString(details.PkhRedeem), sw.Key.PKHHex())
+	}
+	if len(sw.SecretHash) &gt; 0 &amp;&amp; !bytes.Equal(details.SecretHash, sw.SecretHash) {
+		return nil, fmt.Errorf(&quot;contract commits to secret hash %s, this swap uses %s&quot;,
+			hex.EncodeToString(details.SecretHash), hex.EncodeToString(sw.SecretHash))
+	}
+	if len(sw.SecretHash) == 0 {</code></pre></details>
+<details><summary>Redeem executes with standard flags</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/txbuild.go#L193-L204">wasm/txbuild.go:193</a></p>
+<p>Ferry rejects the spend when the nonminimal instruction is executed, after the peer may have committed its other leg.</p>
+<pre><code>	// Execute the script locally before handing the transaction to anyone.
+	// A swap failing at broadcast time is recoverable; one that fails silently
+	// is not.
+	engine, err := txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags,
+		txscript.NewSigCache(10), txscript.NewTxSigHashes(tx, prevoutFetcher(contractPkScript, funding.Value)),
+		funding.Value, prevoutFetcher(contractPkScript, funding.Value))
+	if err != nil {
+		return nil, fmt.Errorf(&quot;script engine: %w&quot;, err)
+	}
+	if err := engine.Execute(); err != nil {
+		return nil, fmt.Errorf(&quot;built transaction does not satisfy the contract: %w&quot;, err)
+	}</code></pre></details>
+</article>
+<article id="finding-5"><span class="badge medium">MEDIUM / P2</span><h2>F05 · A session peer can replace the script of an already-funded swap</h2>
+<p>A counterparty can send a second valid contract through the live session after the first was funded. Ferry overwrites the script while retaining the original funding outpoint, so the victim&#x27;s later redeem spends that outpoint using the wrong script and is rejected.</p>
+<p class="muted">Finding ID: csf_cbfdd0239239945ca02a5c31 · CWE-841 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L438-L441">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>The session contract handler calls `api.audit()` for each accepted peer contract. `AuditContract()` checks the new redeem key, hash and timing but does not freeze contract identity once funding or the other leg is committed. It overwrites `Contract`, `ContractAddr`, `LockTime` and the refund key without clearing or rebinding `Funding`. `BuildRedeem()` constructs its local previous-output script from that new contract rather than checking the actual funding transaction.</p>
+<h3>Attack path and conditions</h3>
+<p>Incoming session contract messages automatically call api.audit. AuditContract accepts a new script whenever its redeem key, secret hash and timing checks pass, including after funding and Zenon commitment. It overwrites Contract, ContractAddr and CounterpartyPKH without clearing or rebinding Funding. The attacker can fund contract A, wait for the victim to lock Zenon, then send contract B with the same hash, victim redeem key and locktime but a different refund key. After the attacker unlocks Zenon, the victim builds a B-script spend of A&#x27;s funding output. Local validation constructs its supposed previous-output script from B rather than reading A&#x27;s actual script, so the network rejects the transaction. The attacker can later refund A.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+i
+n
+i
+t
+i
+a
+t
+o
+r
+ 
+c
+o
+n
+n
+e
+c
+t
+e
+d
+ 
+t
+o
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+s
+w
+a
+p
+ 
+s
+e
+s
+s
+i
+o
+n
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+ 
+n
+e
+e
+d
+s
+ 
+a
+n
+ 
+e
+s
+t
+a
+b
+l
+i
+s
+h
+e
+d
+ 
+s
+e
+s
+s
+i
+o
+n
+,
+ 
+f
+u
+n
+d
+e
+d
+ 
+f
+i
+r
+s
+t
+ 
+c
+o
+n
+t
+r
+a
+c
+t
+,
+ 
+a
+ 
+s
+e
+c
+o
+n
+d
+ 
+c
+o
+m
+m
+i
+t
+m
+e
+n
+t
+ 
+a
+n
+d
+ 
+a
+ 
+t
+i
+m
+e
+d
+ 
+r
+e
+p
+l
+a
+c
+e
+m
+e
+n
+t
+.
+ 
+R
+e
+c
+o
+v
+e
+r
+y
+ 
+u
+s
+i
+n
+g
+ 
+t
+h
+e
+ 
+o
+r
+i
+g
+i
+n
+a
+l
+ 
+s
+c
+r
+i
+p
+t
+ 
+m
+a
+y
+ 
+d
+e
+f
+e
+a
+t
+ 
+t
+h
+e
+ 
+a
+t
+t
+e
+m
+p
+t
+e
+d
+ 
+l
+o
+s
+s
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+R
+e
+m
+o
+t
+e
+ 
+c
+o
+r
+r
+u
+p
+t
+i
+o
+n
+ 
+o
+f
+ 
+a
+ 
+l
+i
+v
+e
+ 
+s
+w
+a
+p
+&
+#
+x
+2
+7
+;
+s
+ 
+c
+l
+a
+i
+m
+ 
+p
+a
+t
+h
+,
+ 
+w
+i
+t
+h
+ 
+l
+o
+s
+s
+ 
+o
+f
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+Z
+e
+n
+o
+n
+ 
+p
+a
+y
+m
+e
+n
+t
+ 
+i
+f
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+ 
+d
+o
+e
+s
+ 
+n
+o
+t
+ 
+r
+e
+s
+t
+o
+r
+e
+ 
+t
+h
+e
+ 
+o
+r
+i
+g
+i
+n
+a
+l
+ 
+c
+o
+n
+t
+r
+a
+c
+t
+ 
+a
+n
+d
+ 
+c
+l
+a
+i
+m
+ 
+b
+e
+f
+o
+r
+e
+ 
+t
+h
+e
+ 
+B
+i
+t
+c
+o
+i
+n
+ 
+r
+e
+f
+u
+n
+d
+ 
+d
+e
+a
+d
+l
+i
+n
+e
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent traced the automatic session handler and all audit mutations. A second contract with the same redeem key, secret hash and admissible expiry but a different refund key passes validation and changes the P2SH address; the previously selected funding remains. Local spend validation uses the replacement script as its assumed prevout and therefore cannot detect the mismatch against the real chain output.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li><li>Loss is conditional on the victim failing to restore the original script before the attacker can refund. Old recovery files or a retained transcript may permit recovery; this is not unconditional theft.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>The replacement must preserve the victim&#x27;s redeem key and secret hash and pass timing checks.</li><li>A previously saved recovery file containing contract A can enable manual recovery.</li><li>The attacker does not acquire the victim&#x27;s private key; exploitation relies on blocking the normal claim path until the refund deadline.</li></ul>
+<h3>Remediation</h3>
+<p>Treat an identical retransmission as idempotent and reject changed contracts or participant keys after a funding broadcast, observed funding, or either-leg commitment. Bind each funding record to its actual scriptPubKey and validate that binding before signing.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>Once either leg is committed, reject a different contract while permitting byte-identical retransmissions.</li><li>Check that rejected re-audit leaves contract, funding, HTLC verification and refund artifacts unchanged.</li><li>Before signing, compare the actual referenced funding output script with the frozen contract, including restored backups.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Peer messages automatically invoke audit</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/composables/useSession.ts#L612-L630">ui/src/core/composables/useSession.ts:612</a></p>
+<p>An authenticated counterparty can resend contract messages; the handler applies the returned swap.</p>
+<pre><code>      // board&#x27;s own `pendingTrade` is.
+      peerAddresses.value = {
+        btc: (msg.btcAddr ?? &#x27;&#x27;).trim(),
+        znn: (msg.zenonAddr ?? &#x27;&#x27;).trim(),
+      }
+      say(&#x27;in&#x27;, &#x27;They sent where to pay them — it is filled into the new-swap form.&#x27;)
+      break
+    case &#x27;pkh&#x27;:
+      await applyValue(`their pubkey hash ${short(msg.pkhHex)}`, () =&gt;
+        api.counterparty(swapId.value, msg.pkhHex ?? &#x27;&#x27;),
+      )
+      break
+    case &#x27;contract&#x27;:
+      await applyValue(`their contract ${short(msg.contractHex)}`, () =&gt;
+        api.audit(swapId.value, msg.contractHex ?? &#x27;&#x27;),
+      )
+      break
+    case &#x27;zenon&#x27;:
+      await applyValue(`their Zenon HTLC ${short(msg.htlcId)}`, async () =&gt; {</code></pre></details>
+<details><summary>Overwrite contract without funding guard</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L429-L454">wasm/manager.go:429</a></p>
+<p>The new valid script is stored without checking commitment state or rebinding the existing outpoint.</p>
+<pre><code>	remaining := time.Until(time.Unix(details.LockTime, 0))
+	if err := auditLegOrdering(sw, details.LockTime, remaining); err != nil {
+		return nil, err
+	}
+
+	addr, err := ContractAddress(contract, params)
+	if err != nil {
+		return nil, err
+	}
+	sw.Contract = contract
+	sw.ContractAddr = addr.String()
+	sw.LockTime = details.LockTime
+	sw.CounterpartyPKH = details.PkhRefund
+	if sw.State == StateDraft {
+		sw.State = StateAwaitingFunding
+	}
+	planZenonLeg(sw, time.Now().UTC())
+	sw.log(&quot;audited counterparty contract %s: redeemable by our key, locktime %s (%s away), &quot;+
+		&quot;which is the %s leg&quot;,
+		sw.ContractAddr, time.Unix(details.LockTime, 0).UTC().Format(time.RFC3339),
+		remaining.Truncate(time.Minute), legOwner(sw.BitcoinLegIsInitiators()))
+	if sw.ZenonHtlcIsOurs() &amp;&amp; sw.Zenon.ExpirationSeconds &gt; 0 &amp;&amp; sw.Zenon.HtlcID == &quot;&quot; {
+		sw.log(&quot;create your Zenon HTLC with an expiry of %ds (%dh) so it lands on the correct &quot;+
+			&quot;side of this contract&#x27;s locktime&quot;,
+			sw.Zenon.ExpirationSeconds, sw.Zenon.ExpirationHours)
+	}</code></pre></details>
+<details><summary>Derive prevout script from mutable contract</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/txbuild.go#L145-L160">wasm/txbuild.go:145</a></p>
+<p>The signer pairs the existing outpoint with a script inferred from the replacement contract.</p>
+<pre><code>	fundingHash, err := chainhash.NewHashFromStr(funding.TxID)
+	if err != nil {
+		return nil, fmt.Errorf(&quot;bad funding txid: %w&quot;, err)
+	}
+	contractPkScript, err := contractPkScript(contract, params)
+	if err != nil {
+		return nil, err
+	}
+
+	newTx := func() *wire.MsgTx {
+		tx := wire.NewMsgTx(txVersion)
+		tx.LockTime = uint32(locktime)
+		txIn := wire.NewTxIn(&amp;wire.OutPoint{Hash: *fundingHash, Index: funding.Vout}, nil, nil)
+		// CHECKLOCKTIMEVERIFY is only enforced when the input&#x27;s sequence is not
+		// final, so the refund path must not use the default 0xffffffff. Using
+		// 0 for both paths keeps the two transactions the same size.</code></pre></details>
+<details><summary>Validate against the assumed script</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/txbuild.go#L193-L204">wasm/txbuild.go:193</a></p>
+<p>The local engine validates the replacement rather than the real previous output, leaving rejection to the chain.</p>
+<pre><code>	// Execute the script locally before handing the transaction to anyone.
+	// A swap failing at broadcast time is recoverable; one that fails silently
+	// is not.
+	engine, err := txscript.NewEngine(contractPkScript, tx, 0, txscript.StandardVerifyFlags,
+		txscript.NewSigCache(10), txscript.NewTxSigHashes(tx, prevoutFetcher(contractPkScript, funding.Value)),
+		funding.Value, prevoutFetcher(contractPkScript, funding.Value))
+	if err != nil {
+		return nil, fmt.Errorf(&quot;script engine: %w&quot;, err)
+	}
+	if err := engine.Execute(); err != nil {
+		return nil, fmt.Errorf(&quot;built transaction does not satisfy the contract: %w&quot;, err)
+	}</code></pre></details>
+</article>
+<article id="finding-6"><span class="badge medium">MEDIUM / P2</span><h2>F06 · An offer amount becomes shell syntax in copied CLI commands</h2>
+<p>A malicious offer can place shell substitution syntax in its Zenon amount. Ferry copies that string into the optional znn-cli command without quoting. A user who fills the command&#x27;s wallet placeholders and runs it can execute the counterparty&#x27;s command with their local account privileges.</p>
+<p class="muted">Finding ID: csf_095ef75befb2c17e1f6fce8e · CWE-78 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/zenon-commands.ts#L94-L98">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`DecodeOffer()` validates the envelope, key/hash fields, network, roles and Bitcoin amount, but not `ZenonAmt`. The form copies the peer&#x27;s string and `Manager.Create()` stores it in `AmountDisplay`; equal offer/form strings pass the terms comparison. `znnCommands()` then interpolates this value into a shell command, and the swap card exposes a copy button. Wallet-specific numeric checks are on another path and do not sanitize command generation.</p>
+<h3>Attack path and conditions</h3>
+<p>DecodeOffer does not validate ZenonAmt as a decimal. ActivePage copies it into zenonAmount, and Create stores the trimmed string without numeric validation. Offer.CheckCreate compares the agreed text but is not a numeric validator. znnCommands interpolates amountDisplay directly into shell input and SwapCard supplies a CopyButton for that command. An offer amount such as 1$(id) reaches the generated command unchanged; when the victim fills the normal keystore placeholders and runs it, the shell executes the substitution before znn-cli can reject the amount.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+c
+o
+u
+n
+t
+e
+r
+p
+a
+r
+t
+y
+ 
+w
+h
+o
+ 
+s
+u
+p
+p
+l
+i
+e
+s
+ 
+a
+n
+ 
+e
+n
+c
+o
+d
+e
+d
+ 
+o
+f
+f
+e
+r
+ 
+t
+o
+ 
+a
+ 
+v
+i
+c
+t
+i
+m
+ 
+u
+s
+i
+n
+g
+ 
+F
+e
+r
+r
+y
+&
+#
+x
+2
+7
+;
+s
+ 
+s
+u
+p
+p
+o
+r
+t
+e
+d
+ 
+z
+n
+n
+-
+c
+l
+i
+ 
+w
+o
+r
+k
+f
+l
+o
+w
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+T
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+ 
+m
+u
+s
+t
+ 
+c
+h
+o
+o
+s
+e
+ 
+t
+h
+e
+ 
+o
+p
+t
+i
+o
+n
+a
+l
+ 
+C
+L
+I
+ 
+w
+o
+r
+k
+f
+l
+o
+w
+,
+ 
+f
+i
+l
+l
+ 
+v
+i
+s
+i
+b
+l
+e
+ 
+p
+l
+a
+c
+e
+h
+o
+l
+d
+e
+r
+s
+ 
+a
+n
+d
+ 
+r
+u
+n
+ 
+t
+h
+e
+ 
+c
+o
+p
+i
+e
+d
+ 
+c
+o
+m
+m
+a
+n
+d
+;
+ 
+n
+o
+ 
+e
+x
+e
+c
+u
+t
+i
+o
+n
+ 
+o
+c
+c
+u
+r
+s
+ 
+m
+e
+r
+e
+l
+y
+ 
+b
+y
+ 
+d
+e
+c
+o
+d
+i
+n
+g
+ 
+o
+r
+ 
+v
+i
+e
+w
+i
+n
+g
+ 
+t
+h
+e
+ 
+o
+f
+f
+e
+r
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+A
+r
+b
+i
+t
+r
+a
+r
+y
+ 
+c
+o
+m
+m
+a
+n
+d
+ 
+e
+x
+e
+c
+u
+t
+i
+o
+n
+ 
+a
+s
+ 
+t
+h
+e
+ 
+u
+s
+e
+r
+ 
+r
+u
+n
+n
+i
+n
+g
+ 
+z
+n
+n
+-
+c
+l
+i
+,
+ 
+p
+o
+t
+e
+n
+t
+i
+a
+l
+l
+y
+ 
+e
+x
+p
+o
+s
+i
+n
+g
+ 
+w
+a
+l
+l
+e
+t
+ 
+f
+i
+l
+e
+s
+ 
+o
+r
+ 
+o
+t
+h
+e
+r
+ 
+l
+o
+c
+a
+l
+ 
+s
+e
+c
+r
+e
+t
+s
+.
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace</p>
+<p>The parent traced the unvalidated field from offer decoding through form population and stored state to the literal template and copy control. A string containing shell substitution, for example `1$(id)`, is emitted as executable syntax in the command&#x27;s amount position. No shell payload was executed. HTML escaping protects page rendering but not a copied shell command.</p>
+<ul><li>No live wallet or chain exploit was run; supported Go build and isolated regressions were blocked by toolchain and offline dependency availability.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>The payload appears as visible amount text.</li><li>CLI commands are behind an opt-in toggle and require the user to execute them.</li><li>The Syrius create path later performs decimal conversion and rejects a malformed amount, but command generation does not pass through that validator.</li></ul>
+<h3>Remediation</h3>
+<p>Validate positive bounded decimal amounts at offer decoding and core swap creation. POSIX-shell-quote every interpolated argument in CLI output, including amounts, HTLC identifiers and node URLs, and avoid emitting runnable commands while mandatory fields remain invalid.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>Reject shell metacharacters, substitutions, whitespace and invalid numeric formats at offer decoding and swap creation.</li><li>Never emit a runnable command for incomplete or invalid terms; test all interpolated values, including node URLs and IDs.</li><li>Verify safe quoting by comparing parsed shell arguments in an isolated nonexecuting parser, and preserve valid decimal amounts.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Decode untrusted offer JSON</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/swap.go#L502-L517">wasm/swap.go:502</a></p>
+<p>The counterparty controls the encoded Zenon amount field.</p>
+<pre><code>func DecodeOffer(s string) (*Offer, error) {
+	const prefix = &quot;swapoffer1:&quot;
+	if len(s) &lt;= len(prefix) || s[:len(prefix)] != prefix {
+		return nil, errors.New(&quot;not a swap offer string (expected a swapoffer1: prefix)&quot;)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(s[len(prefix):])
+	if err != nil {
+		return nil, fmt.Errorf(&quot;offer is not valid base64: %w&quot;, err)
+	}
+	var o Offer
+	if err := json.Unmarshal(raw, &amp;o); err != nil {
+		return nil, fmt.Errorf(&quot;offer is not valid JSON: %w&quot;, err)
+	}
+	if o.Version != 1 {
+		return nil, fmt.Errorf(&quot;unsupported offer version %d&quot;, o.Version)
+	}</code></pre></details>
+<details><summary>Return without Zenon amount validation</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/swap.go#L541-L551">wasm/swap.go:541</a></p>
+<p>The decoder ends after role and Bitcoin amount checks.</p>
+<pre><code>		return nil, fmt.Errorf(&quot;offer&#x27;s btcLeg is %q, must be %q or %q&quot;, o.BTCLeg, LegSend, LegReceive)
+	}
+	if o.FromRole != RoleInitiator &amp;&amp; o.FromRole != RoleParticipant {
+		return nil, fmt.Errorf(&quot;offer&#x27;s fromRole is %q, must be %q or %q&quot;,
+			o.FromRole, RoleInitiator, RoleParticipant)
+	}
+	if o.AmountSats &lt;= 0 {
+		return nil, fmt.Errorf(&quot;offer&#x27;s amountSats is %d, which is not an amount&quot;, o.AmountSats)
+	}
+	return &amp;o, nil
+}</code></pre></details>
+<details><summary>Populate the form with the peer&#x27;s amount</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/pages/ActivePage.vue#L532-L550">ui/src/pages/ActivePage.vue:532</a></p>
+<p>The amount string crosses unchanged into the form used to create the local swap.</p>
+<pre><code>  // has to build the contract, which is the side sending BTC.
+  form.value.counterpartyPkhHex = d.yourLeg === &#x27;send&#x27; ? (d.decoded.pkh ?? &#x27;&#x27;) : &#x27;&#x27;
+  // Written whether or not the offer carried a value, which the guarded version
+  // of this did not do. A term the offer leaves out is still a term: Go reads a
+  // blank Zenon token as ZNN on both sides, so an offer that omits it and a
+  // form still holding the last thing typed into that box are two different
+  // swaps. Now that these fields are about to be locked, a stale value left in
+  // one is the worst of both -- disagreed about, and out of reach.
+  form.value.amountSats = String(d.decoded.amountSats ?? 0)
+  form.value.zenonPeerAddress = d.decoded.zenonAddr ?? &#x27;&#x27;
+  form.value.zenonToken = d.decoded.zenonToken ?? &#x27;&#x27;
+  form.value.zenonAmount = d.decoded.zenonAmt ?? &#x27;&#x27;
+  // Two of the terms an offer pins -- the token, and the pubkey hash naming the
+  // key their Bitcoin is redeemable by -- live behind Advanced options, which
+  // is collapsed. Checking what arrived is the whole job here, and a value
+  // folded away is one nobody checks. Opened rather than moved out: they are
+  // still advanced for somebody filling this in from scratch.
+  showAdvanced.value = true
+}</code></pre></details>
+<details><summary>Store the amount as trimmed text</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/manager.go#L266-L279">wasm/manager.go:266</a></p>
+<p>Creation preserves shell syntax in the amount display field.</p>
+<pre><code>		State:      StateDraft,
+		Key:        key,
+		AmountSats: p.AmountSats,
+		DestAddr:   p.DestAddr,
+		Zenon: ZenonLeg{
+			SelfAddress:   zenonSelf,
+			PeerAddress:   zenonPeer,
+			TokenStandard: zenonToken,
+			AmountDisplay: strings.TrimSpace(p.ZenonAmount),
+			HashType:      znn.HashTypeSHA256,
+			KeyMaxSize:    SecretSize,
+		},
+	}
+</code></pre></details>
+<details><summary>Read stored strings for the command</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/zenon-commands.ts#L60-L74">ui/src/core/zenon-commands.ts:60</a></p>
+<p>The generator pulls the unvalidated amount and other values directly into command variables.</p>
+<pre><code>export function znnCommands(sw: Swap, ctx: CommandContext = {}): string {
+  const lines: string[] = []
+  const token = sw.zenon?.tokenStandard || &#x27;ZNN&#x27;
+  const hours = sw.zenon?.expirationHours
+  const amount = sw.zenon?.amountDisplay || &#x27;&lt;amount&gt;&#x27;
+  const peer = sw.zenon?.peerAddress || &#x27;&lt;counterparty z1 address&gt;&#x27;
+  const self = sw.zenon?.selfAddress
+  const ours = sw.btcLegIsInitiators ? &quot;participant&#x27;s&quot; : &quot;initiator&#x27;s&quot;
+
+  // -k names the keystore (its file name, or the address it holds), -i the
+  // account index inside it, -p the passphrase and -u the node.
+  const node = ctx.nodeURL ? ` -u ${ctx.nodeURL}` : &#x27; -u &lt;wss://your-node:35998&gt;&#x27;
+  const cliFlags = ` -k ${self || &#x27;&lt;your keystore&gt;&#x27;} -i &lt;account index&gt; -p &lt;passphrase&gt;${node}`
+
+  lines.push(`# znn-cli — ${ZNN_CLI_URL}`)</code></pre></details>
+<details><summary>Interpolate unquoted command arguments</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/zenon-commands.ts#L92-L99">ui/src/core/zenon-commands.ts:92</a></p>
+<p>Shell substitution is active when the copied template is run by the victim.</p>
+<pre><code>          ` needs ${hours}h. Use the Syrius extension, which has no cap.`,
+      )
+    } else {
+      lines.push(
+        `znn-cli htlc.create ${peer} ${token} ${amount} ${hours || &#x27;&lt;hours&gt;&#x27;} 1` +
+          ` ${sw.secretHashHex}${cliFlags}`,
+      )
+    }</code></pre></details>
+<details><summary>Expose the generated command for copying</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/SwapCard.vue#L1316-L1332">ui/src/components/SwapCard.vue:1316</a></p>
+<p>The optional CLI panel supports the copy-and-run workflow needed for impact.</p>
+<pre><code>        &lt;div v-if=&quot;showCli&quot; class=&quot;min-w-0&quot;&gt;
+          &lt;Button variant=&quot;outline&quot; size=&quot;sm&quot; @click=&quot;showCommands = !showCommands&quot;&gt;
+            {{ showCommands ? &#x27;Hide&#x27; : &#x27;Show&#x27; }} the command to run
+            {{ zenonAction || zenonReclaimable ? &#x27;instead&#x27; : &#x27;&#x27; }}
+          &lt;/Button&gt;
+          &lt;!-- The commands DO scroll rather than wrap: they are line-oriented
+               shell input, and a wrapped command line is one somebody copies
+               wrong. Which makes every box between this &lt;pre&gt; and the page a
+               load-bearing min-w-0 — a grid or flex item defaults to min-width
+               auto, so without one at EVERY level the widest command line is
+               pushed all the way out through the card and widens the page
+               instead of scrolling inside its own box. --&gt;
+          &lt;div v-if=&quot;showCommands&quot; class=&quot;relative mt-2 w-full min-w-0&quot;&gt;
+            &lt;pre
+              class=&quot;max-w-full overflow-x-auto rounded-md bg-muted/60 p-3 font-mono text-xs leading-relaxed&quot;
+              &gt;{{ commands }}&lt;/pre&gt;
+            &lt;CopyButton :value=&quot;commands&quot; size=&quot;icon-sm&quot; class=&quot;absolute top-2 right-2&quot; /&gt;</code></pre></details>
+</article>
+<article id="finding-7"><span class="badge low">LOW / P3</span><h2>F07 · A crafted take timestamp disables the shared board inbox</h2>
+<p>A malicious configured relay can deliver a validly signed, encrypted take whose timestamp crashes date formatting in the shared board inbox. This blocks rendering of legitimate requests as well as the malformed one.</p>
+<p class="muted">Finding ID: csf_f86b1f17a253c04802614722 · CWE-20, CWE-248 · Confidence: high</p>
+<p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/BoardInbox.vue#L94">Open root control at the audited revision</a></p>
+<h3>Root cause</h3>
+<p>`OpenTake()` verifies the author&#x27;s signature and decrypts the request, then returns `CreatedAt` unchanged. `useBoard` retains requests by post identity and dismissal state without validating time. `BoardInbox` calls `toISOString()` on every request&#x27;s date during its shared render; values accepted by Go&#x27;s `int64` can be outside JavaScript&#x27;s supported Date range and throw.</p>
+<h3>Attack path and conditions</h3>
+<p>An attacker with its own Nostr key encrypts a take to the victim&#x27;s public board identity, names a live local post, signs an out-of-range timestamp and has a configured relay deliver it. The request survives decoding and post filtering, then throws during inbox rendering.</p>
+<
+u
+l
+>
+<
+l
+i
+>
+A
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+c
+o
+n
+f
+i
+g
+u
+r
+e
+d
+ 
+r
+e
+l
+a
+y
+,
+ 
+o
+r
+ 
+a
+n
+ 
+a
+r
+b
+i
+t
+r
+a
+r
+y
+ 
+b
+o
+a
+r
+d
+ 
+p
+a
+r
+t
+i
+c
+i
+p
+a
+n
+t
+ 
+a
+b
+l
+e
+ 
+t
+o
+ 
+h
+a
+v
+e
+ 
+o
+n
+e
+ 
+c
+o
+n
+f
+i
+g
+u
+r
+e
+d
+ 
+r
+e
+l
+a
+y
+ 
+d
+e
+l
+i
+v
+e
+r
+ 
+i
+t
+s
+ 
+e
+v
+e
+n
+t
+.
+ 
+T
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+n
+e
+e
+d
+s
+ 
+o
+n
+l
+y
+ 
+i
+t
+s
+ 
+o
+w
+n
+ 
+N
+o
+s
+t
+r
+ 
+k
+e
+y
+ 
+a
+n
+d
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+p
+u
+b
+l
+i
+c
+ 
+b
+o
+a
+r
+d
+ 
+k
+e
+y
+ 
+a
+n
+d
+ 
+o
+p
+e
+n
+/
+t
+a
+k
+e
+n
+ 
+p
+o
+s
+t
+ 
+I
+D
+;
+ 
+i
+t
+ 
+d
+o
+e
+s
+ 
+n
+o
+t
+ 
+n
+e
+e
+d
+ 
+t
+h
+e
+ 
+v
+i
+c
+t
+i
+m
+&
+#
+x
+2
+7
+;
+s
+ 
+p
+r
+i
+v
+a
+t
+e
+ 
+k
+e
+y
+,
+ 
+a
+ 
+w
+a
+l
+l
+e
+t
+ 
+p
+r
+o
+o
+f
+,
+ 
+o
+r
+ 
+a
+ 
+p
+r
+e
+v
+i
+o
+u
+s
+l
+y
+ 
+s
+h
+a
+r
+e
+d
+ 
+s
+e
+s
+s
+i
+o
+n
+ 
+c
+o
+d
+e
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+R
+e
+q
+u
+i
+r
+e
+s
+ 
+a
+ 
+l
+i
+v
+e
+ 
+l
+o
+c
+a
+l
+ 
+p
+o
+s
+t
+ 
+a
+n
+d
+ 
+e
+v
+e
+n
+t
+ 
+d
+e
+l
+i
+v
+e
+r
+y
+ 
+b
+y
+ 
+a
+ 
+m
+a
+l
+i
+c
+i
+o
+u
+s
+ 
+o
+r
+ 
+p
+e
+r
+m
+i
+s
+s
+i
+v
+e
+ 
+c
+o
+n
+f
+i
+g
+u
+r
+e
+d
+ 
+r
+e
+l
+a
+y
+.
+ 
+T
+h
+e
+ 
+a
+t
+t
+a
+c
+k
+e
+r
+ 
+n
+e
+e
+d
+s
+ 
+o
+n
+l
+y
+ 
+i
+t
+s
+ 
+o
+w
+n
+ 
+k
+e
+y
+ 
+p
+l
+u
+s
+ 
+t
+h
+e
+ 
+p
+u
+b
+l
+i
+c
+ 
+p
+o
+s
+t
+ 
+a
+n
+d
+ 
+r
+e
+c
+i
+p
+i
+e
+n
+t
+ 
+i
+d
+e
+n
+t
+i
+t
+y
+.
+<
+/
+l
+i
+>
+<
+l
+i
+>
+B
+o
+a
+r
+d
+ 
+i
+n
+b
+o
+x
+ 
+a
+v
+a
+i
+l
+a
+b
+i
+l
+i
+t
+y
+ 
+l
+o
+s
+s
+<
+/
+l
+i
+>
+<
+/
+u
+l
+>
+<h3>Validation</h3>
+<p>static source trace and isolated execution of the exact formatter</p>
+<p>A Node vm evaluated the date expression extracted directly from `BoardInbox.vue`. Timestamp 0 produced 1970-01-01 00:00:00; timestamp 8640000000001 seconds produced RangeError: Invalid time value. Source inspection confirmed the signed/decrypted path can preserve that integer and the inbox has no per-request fallback.</p>
+<ul><li>No encrypted network delivery, Vue browser render, or default public relay policy was tested.</li><li>A malicious configured relay is the supported delivery case; withdrawing the referenced post or removing that relay may restore the feature.</li></ul>
+<h4>Counterevidence and limits</h4>
+<ul><li>The signature and AEAD checks prevent a relay from merely editing an honest take. The attacker must generate and sign its own valid take, which requires only its own key and the publicly advertised recipient key.</li><li>An honest default public relay may reject far-future or ancient timestamps. No implementation or rejection policy for those external services exists in the reviewed source, and their current acceptance was not tested. Delivery through a malicious configured relay is the directly supported case; permissive honest-relay delivery is conditional.</li><li>Only requests naming a locally retained open/taken post reach this inbox. Already handled events and missing/finished posts are filtered. Withdrawing or otherwise excluding the affected post can remove its requests from the computed inbox.</li><li>The normal sending handler uses the current clock, so ordinary application-generated requests do not trigger the issue. The vulnerability is acceptance of malicious wire data, not normal clock formatting.</li><li>The rendering effect was statically assessed; no browser payload or exploit was executed.</li></ul>
+<h3>Remediation</h3>
+<p>Reject unsupported or implausible event timestamps in the take read boundary before adding requests to inbox state, and use a total date-formatting helper that returns a fallback for invalid dates. Add source-level regression coverage for a validly signed/encrypted take with an out-of-range created_at and for mixed valid/invalid inbox requests so malformed data cannot disable dismiss controls.</p>
+<h4>Proposed regression tests — not executed</h4>
+<ul><li>A valid signed/encrypted take outside the supported timestamp range must be rejected or safely displayed.</li><li>A malformed take mixed with legitimate requests must not prevent accepting or dismissing legitimate requests.</li></ul>
+<h3>Source evidence</h3>
+<details><summary>Relay frames enter application routing</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/nostr.ts#L183-L199">ui/src/core/nostr.ts:183</a></p>
+<p>A configured relay can deliver an event regardless of client subscription filter semantics.</p>
+<pre><code>    sock.onmessage = (ev: MessageEvent) =&gt; {
+      if (typeof ev.data !== &#x27;string&#x27;) return
+      let frame: unknown
+      try {
+        frame = JSON.parse(ev.data)
+      } catch {
+        return
+      }
+      if (!Array.isArray(frame) || frame[0] !== &#x27;EVENT&#x27;) return
+      const event = frame[2] as NostrEvent | undefined
+      // A relay is free to send anything. Only the shape is checked here —
+      // whether it is genuine is the module&#x27;s business, and it checks the
+      // signature over a hash it recomputes rather than one this file passed on.
+      if (!event?.id || typeof event.content !== &#x27;string&#x27;) return
+      if (this.seen.has(event.id)) return
+      this.seen.add(event.id)
+      this.onEvent?.(event)</code></pre></details>
+<details><summary>Signed and decrypted timestamp remains unbounded</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/wasm/boardpost.go#L842-L871">wasm/boardpost.go:842</a></p>
+<p>The attacker can sign and encrypt its own take; these authenticity checks do not constrain its `created_at` value.</p>
+<pre><code>func OpenTake(identity *BoardIdentity, ev *NostrEvent) (*InboundTake, error) {
+	if err := verifyEvent(ev); err != nil {
+		return nil, err
+	}
+	if ev.Kind != takeKind {
+		return nil, fmt.Errorf(&quot;event kind %d is not a ferry board take&quot;, ev.Kind)
+	}
+	if p := tagValue(ev, &quot;p&quot;); !strings.EqualFold(p, identity.PubKey) {
+		return nil, errors.New(&quot;that take is addressed to somebody else&quot;)
+	}
+	priv, err := identity.PrivKey()
+	if err != nil {
+		return nil, err
+	}
+	secret, err := boardShared(priv, ev.PubKey)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := openBox(secret, ev.Content)
+	if err != nil {
+		return nil, err
+	}
+	var take Take
+	if err := json.Unmarshal(plain, &amp;take); err != nil {
+		return nil, fmt.Errorf(&quot;that take is not readable: %w&quot;, err)
+	}
+	if err := take.validate(); err != nil {
+		return nil, err
+	}
+	return &amp;InboundTake{Take: take, From: ev.PubKey, EventID: ev.ID, At: ev.CreatedAt}, nil</code></pre></details>
+<details><summary>Accepted take enters shared state</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/composables/useBoard.ts#L321-L332">ui/src/core/composables/useBoard.ts:321</a></p>
+<p>The returned timestamp is stored with requests from all configured relays.</p>
+<pre><code>    if (seenTakes.has(ev.id)) return
+    seenTakes.add(ev.id)
+    // Already dealt with in an earlier session. Skipped before it is opened
+    // rather than filtered after, because opening it is a call into the module
+    // to decrypt something whose answer is already known.
+    if (handled.value.includes(ev.id)) return
+    try {
+      const {take} = await api.boardReadTake(ev)
+      // Newest first: an inbox where the answer to &quot;who wants this&quot; is at the
+      // bottom is one that gets scrolled past.
+      takes.value = [take, ...takes.value.filter((t) =&gt; t.eventId !== take.eventId)]
+    } catch {</code></pre></details>
+<details><summary>Local post filter preserves malformed time</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/core/composables/useBoard.ts#L172-L178">ui/src/core/composables/useBoard.ts:172</a></p>
+<p>An undismissed take naming an open or taken local post remains visible regardless of timestamp.</p>
+<pre><code>const inbox = computed(() =&gt;
+  takes.value.filter((t) =&gt; {
+    if (handled.value.includes(t.eventId)) return false
+    const post = mine.value.find((p) =&gt; p.post.id === t.take.postId)
+    if (!post) return false
+    return post.post.status === &#x27;open&#x27; || post.post.status === &#x27;taken&#x27;
+  }),</code></pre></details>
+<details><summary>Unguarded date formatting throws</summary><p><a href="https://github.com/sol-znn/ferry-web/blob/be879e1bd61a9922ee58e16d32095bafa43bdf6e/ui/src/components/BoardInbox.vue#L92-L96">ui/src/components/BoardInbox.vue:92</a></p>
+<p>Formatting an out-of-range time throws while rendering the common inbox, before its request controls can be displayed.</p>
+<pre><code>        &lt;/p&gt;
+        &lt;p class=&quot;font-mono text-xs text-muted-foreground/80&quot;&gt;
+          {{ new Date(t.at * 1000).toISOString().slice(0, 19).replace(&#x27;T&#x27;, &#x27; &#x27;) }}
+        &lt;/p&gt;
+      &lt;/div&gt;</code></pre></details>
+</article>
+<footer><p>Sanitized developer share copy. Personal identifiers and machine-local paths were removed. Original audit files remain unchanged; original seal metadata is not included. Verify this export with SHA256SUMS.txt. No external scripts, fonts or assets are required.</p></footer></main></body></html>

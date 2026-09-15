@@ -223,7 +223,7 @@ const linkClass = 'text-primary underline-offset-4 hover:underline'
                 :class="linkClass"
                 >Syrius browser extension</a
               >
-              (v0.3.1 or later) and the Zenon side is buttons. Create, unlock and reclaim each
+              (v0.3.2 or later) and the Zenon side is buttons. Create, unlock and reclaim each
               become one press: the page builds the account block, the extension shows it to you,
               signs it with its own key and publishes it through its own node. No terminal, and no
               key of yours ever reaches this page.

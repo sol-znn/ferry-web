@@ -98,6 +98,25 @@ jobs:
         working-directory: ui
         run: npm run wallet:provider
 
+      # The printed znn-cli commands, against the one gate the engine cannot
+      # enforce on a terminal: no create command is ever printed for the leg
+      # that answers the counterparty's Bitcoin funding, and no text from
+      # outside the page can escape a comment in the copied block.
+      - name: Printed command checks
+        working-directory: ui
+        run: npm run commands
+
+      # The board's date formatting is total: a timestamp a relay delivers is
+      # the signer's choice, and one outside what a Date can hold must print a
+      # dash rather than throw inside a shared render.
+      - name: Date formatting checks
+        working-directory: ui
+        run: npm run dates
+
+      - name: Relay delivery checks
+        working-directory: ui
+        run: npm run relay:delivery
+
       # Development first, so the production build is what is left in
       # ui/public/ferry.wasm and dist/ when this job ends. Each smoke run
       # follows its own build and asserts the module reports the instance that

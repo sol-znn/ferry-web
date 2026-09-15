@@ -41,7 +41,7 @@ This half genuinely is "a wallet you already have".
 
 ### Your Zenon wallet — the Syrius **extension**, not the desktop app
 
-Install [syrius-extension v0.3.1][syrius] or later. It injects a provider at
+Install [syrius-extension v0.3.2][syrius] or later. It injects a provider at
 `window.zenon` and will sign and publish an arbitrary account block on request,
 which is all an HTLC call is — so create, unlock and reclaim each become one
 button, with your key never leaving the extension.
@@ -748,5 +748,49 @@ million rather than slightly wrong.
 `npm run wallet:provider` stands up a stub provider and drives the same path with
 no extension installed at all, which is what runs in CI.
 
-[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.1
+### Driving the real extension
+
+The stub stops at the provider. The dev harness in the Syrius extension's
+repository runs the real extension instead — a dev build, in a Chrome of its
+own, holding a go-zenon devnet wallet that unlocks itself — and drives a page
+and answers the wallet's approval windows from the command line. That makes the
+wallet half of stage 2 runnable without anyone clicking.
+
+```sh
+# in syrius-extension, with the devnet up and a Ferry dev build served on :4175
+npm run dev:start
+node utils/dev-harness.js open http://127.0.0.1:4175/#/board
+node utils/dev-harness.js page click "text=Prove Zenon address"
+node utils/dev-harness.js approve --expect connect
+node utils/dev-harness.js approve --expect signMessage
+```
+
+A swap card's Zenon leg is the same shape: `page click "text=Create the HTLC"`,
+then `page click "text=Sign and publish in Syrius"`, then
+`approve --expect signAndSendBlock`. `approve` prints the approval screen —
+for a block, the whole block — before pressing anything, and refuses unless the
+wallet's node is on this machine and its chain is not mainnet's. The card then
+says the HTLC is awaiting confirmation until it is checked again, and a tab the
+harness is not showing does not check on its own: press `Verify HTLC` (or bring
+the tab forward with `page shot`) rather than waiting.
+
+Two participants are two of it. `--instance <name>` gives each side its own
+Chrome, profile, wallet and storage, and `--address-index` decides which Zenon
+account that side signs as — which is what makes them a counterparty rather
+than the same person twice:
+
+```sh
+node utils/dev-harness.js start --instance a --address-index 1
+node utils/dev-harness.js start --instance b --address-index 2
+node utils/dev-harness.js open --instance b http://127.0.0.1:4175/
+```
+
+Two notes from driving it. Run one wallet command at a time: a second harness
+command while an `approve` is waiting can leave the wallet answering
+"declined", and a declined connect revokes the origin, so the page asks to
+connect again. And use `page reload` rather than `page goto` when only the hash
+changes — the router moves without reloading, so anything the page read at
+startup, an identity or a proof, stays on screen after it has changed.
+
+[syrius]: https://github.com/sol-znn/syrius-extension/releases/tag/v0.3.2
 [znn-cli]: https://github.com/zenon-network/znn_cli_dart

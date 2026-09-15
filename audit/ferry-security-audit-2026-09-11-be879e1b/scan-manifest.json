@@ -1,0 +1,116 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "completedAt": "2026-09-11T09:37:42.407324Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "hardening": {
+      "portfolioPath": "hardening/hardening.md"
+    },
+    "id": "f57e14cb-0b12-4e58-9724-a1cd8419eb3c",
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.24"
+    },
+    "scope": {
+      "artifactsReviewed": [
+        "wasm/",
+        "ui/",
+        "scripts/",
+        "docs/",
+        ".github/workflows/deploy.yml",
+        "README.md",
+        "LICENSE"
+      ],
+      "derivedArtifacts": [
+        {
+          "implemented": false,
+          "kind": "security-hardening-proposal",
+          "path": "hardening/hardening.md"
+        }
+      ],
+      "excludePaths": [],
+      "includePaths": [
+        "."
+      ],
+      "limitations": [
+        "Installed Go 1.25.4 is older than the declared Go 1.27.0. An isolated disposable test copy could not compile offline because exact btcec/v2 v2.1.3 and x/crypto v0.0.0-20200622213623-75b288015ac9 sources were unavailable; no Go regression test passed or ran.",
+        "No production deployment, wallet/chain integration, public relay acceptance policy or live penetration test was assessed.",
+        "Dependency manifests, lockfiles and call sites were reviewed; current vulnerability-advisory databases and third-party package implementations were not comprehensively audited.",
+        "Expired/missing-HTLC Unlock publication behavior is an explicit unresolved external-wallet proof gap.",
+        "Source coverage is complete for this revision, not a guarantee that every vulnerability has been found."
+      ],
+      "runtimeStatus": "The extracted BoardInbox date expression reproduced RangeError for an out-of-range timestamp. No complete application, browser, wallet, chain exploit or supported test suite was executed.",
+      "summary": "Full security source audit of all 152 tracked files at be879e1bd61a9922ee58e16d32095bafa43bdf6e, including Go/WASM, Vue, wallets, chain clients, Nostr, storage/recovery, build/deployment, test sources and documentation.",
+      "validationMode": "Offline source analysis with an independent baseline and focused reviews; isolated execution of the exact inbox date formatter."
+    },
+    "startedAt": "2026-09-11T09:06:08.929638Z",
+    "status": "completed",
+    "target": {
+      "displayName": "ferry-web",
+      "kind": "git_revision",
+      "revision": "be879e1bd61a9922ee58e16d32095bafa43bdf6e",
+      "targetId": "target_sha256_b6b3e0f02a705fd508b92e542efbc8c5f5412d397c222dd5dac92d75d71505fe"
+    },
+    "threatModel": {
+      "assets": [
+        "Bitcoin HTLC funds, ephemeral Swap.Key private scalars, secret preimages, signed refunds, destination addresses, and accepted swap terms. Swap JSON is unencrypted in origin localStorage at ferry.swap.<hex-id> for production or ferry.dev.swap.<hex-id> for development. Store.Save serializes the complete record; the ordinary view omits private-key bytes but includes a known preimage. Sources: wasm/store.go:29; wasm/store.go:80; wasm/store.go:98; wasm/api.go:179; wasm/api.go:184.",
+        "Board signing identity and accepted session codes: production localStorage keys ferry.board.identity and ferry.board.post.<id>; development keys ferry.dev.board.identity and ferry.dev.board.post.<id>. Identity contains a private scalar; accepted posts can contain a session code. Their authority is offer signing/editing and decrypting addressed takes, independently of transaction signing. Sources: wasm/boardstore.go:26; wasm/boardstore.go:33; wasm/boardstore.go:51; wasm/boardstore.go:116; wasm/board.go:255; wasm/boardpost.go:842.",
+        "Encrypted session contents and room membership authority. Generated codes use 16 random bytes; domain-separated derivation creates a shared Schnorr identity, room identifier, and AES-GCM key. Both participants possess the same room capability; authentication proves code possession, not distinct participant identities. The UI receives the code. Sources: wasm/session.go:53; wasm/session.go:124; wasm/session.go:247; wasm/session.go:293; wasm/session.go:354; wasm/session_api.go:26.",
+        "External Bitcoin/Zenon wallet accounts and their signing authority. Ferry calls injected providers without receiving those wallet private keys; provider implementation and its approval interface are outside this repository. Sources: ui/src/core/composables/useUnisat.ts:289; ui/src/core/zenon-wallet.ts:448; ui/src/components/ZenonWallet.vue:204.",
+        "Recovery and export files are portable spending capabilities. Export includes complete swap records; recovery includes privateKeyWIF and known preimage. The UI creates a Blob download named ferry-swaps-<date>.json for a full export; actual disk destination is browser/user controlled. Sources: wasm/store.go:185; wasm/api.go:757; ui/src/components/BackupPanel.vue:22; ui/src/core/api.ts:332.",
+        "Release integrity and the publisher's GitHub Pages authority. Repository dependencies, Go compiler/runtime shim, Vite output, uploaded artifacts, and the deploying workflow determine code executed with origin-local key access. The workflow grants contents:read, pages:write, and id-token:write. Sources: ui/package.json:28; scripts/build.mjs:76; scripts/build.mjs:101; .github/workflows/deploy.yml:34; .github/workflows/deploy.yml:74; .github/workflows/deploy.yml:132."
+      ],
+      "assumptions": [
+        "No actual deployed hostname, host headers, GitHub environment restrictions, selected node URLs, wallet binaries, or relay configuration were supplied. Source defaults do not prove an observed deployment. Executable directories resolve to no inherited SECURITY.md policy; docs/SECURITY.md is documentation within the docs subtree.",
+        "Production/development separation is namespacing, not origin isolation. docs/DEPLOY.md:42 says the two never share stored state; settings, swap, and board keys are instance-specific, but ui/src/core/composables/useSession.ts:179 uses shared ferry.session.peer and all same-origin scripts can read either prefix. docs/DEPLOY.md:64 explicitly recommends different origins for actual separation.",
+        "docs/ARCHITECTURE.md:29 says the UI never holds a key. Actual recovery/export APIs deliberately return private key material to JavaScript for download, and sessionNew returns the code from which session keys derive. Go owns cryptographic operations but is not an isolation boundary against same-origin JavaScript. Sources: wasm/api.go:757; wasm/store.go:185; ui/src/components/BackupPanel.vue:22; wasm/session_api.go:26.",
+        "docs/SECURITY.md:10 attributes fixed destination protection to the contract and says there is no alternate payout code path. The HTLC locks branch keys/hash/timelock; buildSpend selects a destination output, and recovery intentionally permits a different destination. Fixed payout protection is application policy, not a covenant. Sources: wasm/htlc.go:58; wasm/txbuild.go:141; wasm/recover.go:95.",
+        "wasm/httpx/httpx_js.go:40 comments promise no redirect chasing, but redirect is explicitly follow at that same location. HTTP requests omit credentials and remain browser-policy constrained; the claimed fixed-recipient guarantee is not implemented.",
+        "docs/DEPLOY.md:73 says automatic deployment follows main, whereas .github/workflows/deploy.yml:19 triggers master. The workflow is the effective deployment behavior.",
+        "Recovery computation is independent of storage/network, but the browser Recover route is inside EngineGate and startup refuses to expose the API when writable localStorage is unavailable. Thus docs/ARCHITECTURE.md:248 and docs/SECURITY.md:74 describe the computation more broadly than the current page-entry prerequisites support. Sources: wasm/recover.go:95; ui/src/router.ts:23; ui/src/App.vue:45; wasm/main_js.go:35.",
+        "Official build scripts set both UI and WASM environment together, but both instance builds use the shared intermediate ui/public/ferry.wasm and ui/public/wasm_exec.js. Bare Vite defaults UI environment to dev while Go defaults to prod unless linked otherwise; mixed development artifacts are possible outside the official complete build. Sources: scripts/build.mjs:35; scripts/build.mjs:47; scripts/build.mjs:127; ui/vite.config.ts:54; wasm/env.go:26.",
+        "Native httpx uses net/http and bounded reader semantics, whereas shipped js/wasm uses Fetch and arrayBuffer. There is no native production executable startup established here; native code supports tests and tooling. Sources: wasm/httpx/httpx_native.go:1; wasm/httpx/httpx_native.go:40; wasm/httpx/httpx_native.go:46; wasm/main_js.go:1; wasm/httpx/httpx_js.go:82.",
+        "Wallet provider source is absent, so advertised per-operation user approval, account selection during approval, and node publication behavior remain external assumptions. The optional returned signed block makes after-publication comparison conditional. Sources: ui/src/core/zenon-wallet.ts:448; ui/src/core/zenon-wallet.ts:470; wasm/walletblock.go:467.",
+        "This independent architecture mapping is not completed security-audit coverage and establishes no vulnerability findings."
+      ],
+      "attackerCapabilities": [
+        "A malicious counterparty can choose offer terms, contract bytes, claimed transaction/HTLC identifiers, and messages under any session code they legitimately possess. They do not initially possess the victim's swap private key or external wallet key. Relevant boundaries are contract/term verification and secret-release ordering. Sources: wasm/manager.go:388; wasm/manager.go:467; wasm/session.go:293.",
+        "A public board participant can generate their own identity and publish signed claims or send encrypted takes to another board identity. They cannot thereby forge another wallet's binding proof or the victim's board signature. Sources: wasm/board.go:269; wasm/board.go:398; wasm/boardpost.go:464; wasm/boardpost.go:842.",
+        "A relay operator can observe public offers and session metadata, retain/replay/drop events, and supply arbitrary frames. Without a session code or the addressed board identity secret, event signing/decryption checks limit accepted tampering. Room participants share equal code-derived authority; peerId is a replay/UI identifier rather than authentication. Sources: ui/src/core/nostr.ts:193; wasm/session.go:124; wasm/session.go:293; wasm/boardpost.go:842; ui/src/core/composables/useSession.ts:179.",
+        "An operator of an endpoint already selected by the user or wallet can supply dishonest chain responses, fees, and timing information. Exploiting this trust requires selection, endpoint/network compromise, or another demonstrated path changing settings; mere ability to host a node is insufficient. Sources: wasm/api.go:36; wasm/chain/esplora.go:242; wasm/walletsync.go:185.",
+        "A script executing with the deployment origin's authority can read unencrypted keys, call export/recovery, and invoke signing APIs. This requires a demonstrated same-origin script capability, compromised served build/dependency, or privileged extension; a generic unrelated website does not initially have it. Sources: wasm/main_js.go:48; wasm/storage_js.go:30; wasm/api.go:757; ui/index.html:35.",
+        "A user-controlled import/recovery file can carry malformed records and key material, but reaching these parsers requires selection/pasting by the local user. Code execution or new spending authority is not established solely by that input capability. Sources: ui/src/components/BackupPanel.vue:38; wasm/store.go:211; wasm/recover.go:95.",
+        "Only a conditional local-development deployment exposes the regtest shim. Cross-origin callers may reach its deliberately CORS-enabled endpoints when browser networking permits, but the shim does not provide arbitrary wallet RPC and checks that its backing chain is regtest. Sources: scripts/regtest-esplora.mjs:249; scripts/regtest-esplora.mjs:289; scripts/regtest-esplora.mjs:370."
+      ],
+      "securityObjectives": [
+        "Preserve spendability and confidentiality of swap keys, preimages, recovery documents, and board identities within their actual browser-origin and user-file boundaries; refuse starting a swap engine when its persistence probe fails. Sources: wasm/storage_js.go:39; wasm/main_js.go:35; wasm/store.go:98.",
+        "Accept counterparty contracts and Zenon HTLCs only under agreed keys, hashlocks, token/amount terms, chain context, and role-correct expiry ordering; maintain local destination commitments and verify generated Bitcoin spends before exposing them. Sources: wasm/manager.go:388; wasm/manager.go:467; wasm/manager.go:1140; wasm/txbuild.go:196.",
+        "Keep room membership, board-author identity, wallet-address attribution, and wallet payment authorization distinct. A signed relay event authenticates its signing capability, not truth of a trade or permission to spend. Sources: wasm/session.go:293; wasm/board.go:382; wasm/boardpost.go:464; wasm/walletblock.go:175.",
+        "Bind wallet proposals to the intended account, chain, operation, recipient, token, amount, and payload; reject incomplete chain comparisons before building and compare returned publication data. External wallet approval remains a required external control. Sources: wasm/walletsync.go:115; wasm/walletblock.go:175; ui/src/components/ZenonWallet.vue:185; wasm/walletblock.go:467.",
+        "Preserve newer local recovery state when importing backups and make portable exports explicit. Network-independent Rebuild must not depend on a stored swap. Sources: wasm/store.go:211; wasm/recover.go:95; ui/src/components/BackupPanel.vue:22.",
+        "Prevent accidental production/development record and configuration mixing through build-specific prefixes; use distinct origins when security isolation between deployments is required. Preserve compiler/runtime-shim pairing in released artifacts. Sources: wasm/store.go:29; wasm/boardstore.go:26; ui/src/core/composables/useSettings.ts:22; scripts/build.mjs:101; docs/DEPLOY.md:64.",
+        "Bound untrusted network processing without treating filter requests or declared lengths as authoritative. Current HTTP code defines an 8 MiB body limit, but browser buffering happens before final copied-byte truncation; resource guarantees must reflect that implementation. Sources: wasm/httpx/httpx.go:25; wasm/httpx/httpx_js.go:72; wasm/httpx/httpx_js.go:82."
+      ],
+      "summary": "Ferry is a static Vue application whose Go/WebAssembly module manages BTC/ZNN atomic swaps, constructs and signs Bitcoin HTLC spends, persists browser state, and verifies counterparty and chain inputs. Vue loads ./wasm_exec.js and ./ferry.wasm with a build-derived cache query; the module exposes window.ferryWasm.call(method, JSON) after checking writable localStorage. There is no production application server. Bitcoin reads and signed broadcasts go to a configured Esplora; Zenon reads go to a configured HTTP/WebSocket node. External UniSat/Syrius wallet providers fund contracts and sign/publish Zenon operations. Public offers and encrypted conversations use Nostr relays. Official builds produce dist/ for production and dist-dev/ for development; development additionally supports a loopback regtest Esplora shim. User context authorizes the entire current repository. Sources: ui/package.json:6; ui/src/main.ts:21; ui/src/core/wasm.ts:87; wasm/main_js.go:35; wasm/api.go:251; scripts/build.mjs:47; ui/vite.config.ts:28.",
+      "trustBoundaries": [
+        "Website origin to browser key storage: same-origin scripts, including other paths on that origin, share storage and access to the unrestricted ferryWasm API. Prefixes select records but do not isolate principals. The page supplies a meta CSP with script-src 'self' 'wasm-unsafe-eval', connect-src *, object-src 'none', base-uri 'none', and form-action 'none'. Host framing restrictions are not established by this source. Sources: wasm/main_js.go:48; wasm/storage_js.go:30; wasm/store.go:29; ui/index.html:35; docs/SECURITY.md:46.",
+        "Counterparty offers/contracts/preimages to local swap authority: JSON handlers decode fields, Manager audits contract commitments and leg ordering, and secret input must match the existing hash. Bitcoin spends are signed with SIGHASH_ALL and executed in the local script engine before return. The HTLC itself commits branch key hashes, secret hash, and timelock; it does not covenant a fixed payout address. Sources: wasm/api.go:310; wasm/manager.go:388; wasm/manager.go:467; wasm/manager.go:848; wasm/htlc.go:58; wasm/txbuild.go:141; wasm/txbuild.go:183; wasm/txbuild.go:196.",
+        "Configured nodes to economic decisions: each API call creates its Manager from current settings. An explicit Esplora URL overrides per-network defaults; production default is https://blockstream.info/api, testnet https://blockstream.info/testnet/api, signet https://mempool.space/signet/api, and regtest http://127.0.0.1:3002. Zenon has no production default and development initially selects http://127.0.0.1:35997. Responses inform funding, confirmations, fees, matching chain identifiers, HTLC terms, and settlement. Browser HTTP uses omitted credentials, CORS mode, timeout/cancellation, and redirect following. Sources: wasm/api.go:36; wasm/swap.go:402; ui/src/core/env.ts:45; wasm/chain/esplora.go:92; wasm/chain/esplora.go:272; wasm/znn/client.go:111; wasm/httpx/httpx_js.go:40; wasm/manager.go:1140.",
+        "Relays to board and session consumers: custom relay settings override five built-in WSS relays; Vue transports events while Go verifies events and cryptography. ReadPost verifies signature, post structure, identity tag, and wallet proofs; OpenTake verifies signature and recipient then decrypts using identity-derived shared material. OpenSession recomputes the signed event ID and verifies/decrypts under the shared room capability. Network filtering requests sent to relays are not authority. Sources: ui/src/core/composables/useSettings.ts:118; ui/src/core/nostr.ts:60; ui/src/core/nostr.ts:168; wasm/boardpost.go:464; wasm/boardpost.go:503; wasm/boardpost.go:842; wasm/session.go:293.",
+        "Board identity to wallet-address attribution: wallets sign a fixed statement binding an address to a particular board public key; Go verifies that proof and matches the proven address to the address actually claimed by the post. This delegates offer publication, not payment authority. Sources: wasm/board.go:382; wasm/board.go:398; wasm/boardpost.go:503.",
+        "Ferry to Zenon wallet: Go refuses to build a block when account/chain checks fail or cannot run, directly reads the wallet-reported node, and compares both nodes at a shared momentum height. Vue previews the block, invalidates stale wallet plans, rechecks before submission, and passes returned proposed/signed blocks for post-publication comparison. Wallet approval, selected-account behavior, and publication are externally enforced; a post-publication difference check cannot undo publication. Sources: wasm/walletsync.go:115; wasm/walletsync.go:154; wasm/walletsync.go:185; wasm/walletsync.go:217; wasm/walletblock.go:175; ui/src/components/ZenonWallet.vue:142; ui/src/components/ZenonWallet.vue:185; ui/src/components/ZenonWallet.vue:204; wasm/walletblock.go:467.",
+        "Backup file to current local records: the browser reads a user-selected file, Store.Import validates record structure and key consistency, preserves an existing readable record, and saves missing records. Recovery Rebuild consumes file material and constructs a spend without Store or network dependencies. These are explicit key-import/export capabilities, not untrusted relay operations. Sources: ui/src/components/BackupPanel.vue:38; wasm/store.go:211; wasm/store.go:256; wasm/recover.go:95.",
+        "Developer browser to regtest shim to authenticated Bitcoin Core: the optional Node shim binds 127.0.0.1:<configured-port>, defaults to port 3002, sends Basic authorization derived from configured RPC credential references to the configured RPC URL, defaults to http://127.0.0.1:18443, refuses non-regtest chains, and exposes selected reads plus raw transaction broadcast with wildcard CORS. It is not part of dist/. Sources: scripts/regtest-esplora.mjs:39; scripts/regtest-esplora.mjs:44; scripts/regtest-esplora.mjs:45; scripts/regtest-esplora.mjs:46; scripts/regtest-esplora.mjs:47; scripts/regtest-esplora.mjs:58; scripts/regtest-esplora.mjs:61; scripts/regtest-esplora.mjs:249; scripts/regtest-esplora.mjs:289; scripts/regtest-esplora.mjs:370; scripts/regtest-esplora.mjs:378.",
+        "Repository/build dependencies to published origin: push to master or workflow_dispatch builds both instances, tests them, uploads development as an artifact, and publishes the selected directory through GitHub Pages. PUBLISH defaults to prod; a manual dev selection replaces the site with development output. GitHub environment protections and production hostname are external unknowns. Sources: .github/workflows/deploy.yml:19; .github/workflows/deploy.yml:105; .github/workflows/deploy.yml:126; .github/workflows/deploy.yml:132; .github/workflows/deploy.yml:136."
+      ]
+    }
+  },
+  "schemaVersion": "1.0",
+  "shareExport": {
+    "kind": "sanitized-developer-handoff",
+    "originalAuditStatus": "completed",
+    "originalSealIncluded": false,
+    "note": "Personal identifiers and machine-local source paths were removed from this share copy. Original sealed audit files remain unchanged. Verify this export using SHA256SUMS.txt."
+  }
+}
