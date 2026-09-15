@@ -1,7 +1,7 @@
 import {computed, ref, shallowRef, watch} from 'vue'
 import {api} from '@/core/api'
 import {isDev} from '@/core/env'
-import {RelayPool, type NostrEvent, type RelayStatus} from '@/core/nostr'
+import {RelayPool, type AcceptEvent, type NostrEvent, type RelayStatus} from '@/core/nostr'
 import {useFerry} from '@/core/composables/useFerry'
 import {useSession} from '@/core/composables/useSession'
 import {useSettings} from '@/core/composables/useSettings'
@@ -62,10 +62,6 @@ const revision = ref(0)
  * only path an event takes to this list.
  */
 const byKey = new Map<string, Listing>()
-
-/** Take event ids already opened, so a relay replaying its store does not stack
- *  the same request three times in the inbox. */
-const seenTakes = new Set<string>()
 
 /**
  * When each board key was last known to be at a keyboard, in seconds.
@@ -271,11 +267,12 @@ function reap(now = Date.now()) {
 
 let reaper: ReturnType<typeof setInterval> | null = null
 
-async function receive(ev: NostrEvent, kinds: BoardKinds) {
+async function receive(ev: NostrEvent, kinds: BoardKinds, acceptEvent: AcceptEvent) {
   const {body: settings} = useSettings()
   if (ev.kind === kinds.post) {
     try {
       const {listing} = await api.boardRead(ev, settings.value)
+      if (!acceptEvent()) return
       // A board is per network, and the subscription already asks for `#n` —
       // but a relay filter is a REQUEST, not a guarantee. Relays are free to
       // send more than was asked for and they differ in which tags they
@@ -301,6 +298,7 @@ async function receive(ev: NostrEvent, kinds: BoardKinds) {
   if (ev.kind === kinds.presence) {
     try {
       const {seen} = await api.boardReadPresence(ev, settings.value)
+      if (!acceptEvent()) return
       // Newest wins. Relays replay their stored copy on connect and a live beat
       // follows, so the same key arrives twice in the ordinary case — and an
       // older beat overwriting a newer one would show somebody who is here as
@@ -318,14 +316,13 @@ async function receive(ev: NostrEvent, kinds: BoardKinds) {
     return
   }
   if (ev.kind === kinds.take) {
-    if (seenTakes.has(ev.id)) return
-    seenTakes.add(ev.id)
     // Already dealt with in an earlier session. Skipped before it is opened
     // rather than filtered after, because opening it is a call into the module
     // to decrypt something whose answer is already known.
     if (handled.value.includes(ev.id)) return
     try {
       const {take} = await api.boardReadTake(ev)
+      if (!acceptEvent() || handled.value.includes(take.eventId)) return
       // Newest first: an inbox where the answer to "who wants this" is at the
       // bottom is one that gets scrolled past.
       takes.value = [take, ...takes.value.filter((t) => t.eventId !== take.eventId)]
@@ -404,7 +401,7 @@ async function start() {
           since: nowSec - id.presence.staleSeconds,
         },
       ],
-      (ev) => void receive(ev, kinds),
+      (ev, acceptEvent) => receive(ev, kinds, acceptEvent),
       () => (relays.value = p.status),
     )
     relays.value = p.status
@@ -537,7 +534,6 @@ function stop() {
   pool.value = null
   relays.value = []
   byKey.clear()
-  seenTakes.clear()
   listings.value = []
   takes.value = []
   seenAt.value = {}
