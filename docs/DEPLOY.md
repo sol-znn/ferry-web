@@ -5,12 +5,13 @@ secret. Copying it onto a static host is the whole deployment.
 
 ```sh
 cd ui
-npm install --allow-git=all   # nom-ui is a git dependency; npm 12 needs the flag
+npm ci --allow-git=all        # install the committed dependency lock
 npm run build                 # → ../dist       production
 npm run build:dev             # → ../dist-dev   development
 ```
 
-Needs **Go 1.27+** and **Node 22+** on PATH.
+CI pins **Go 1.27.2** and **Node 24.22.0**. Use those versions on PATH to
+reproduce its builds; the build copies the matching Go runtime shim.
 
 ## The two instances
 
@@ -65,7 +66,10 @@ make.
 ## GitHub Pages
 
 `.github/workflows/deploy.yml` tests, builds, smoke-tests the module it is about
-to publish, and deploys on push to `main`. One-time: **Settings → Pages → Source
+to publish, and deploys on push to `master`. Pull requests to `master` or
+`feat/v2` run validation with read-only repository permissions. Pages staging,
+upload and deployment are skipped for pull requests. Required branch checks
+remain a maintainer setting. One-time: **Settings → Pages → Source
 → GitHub Actions**. Pages serves one site per repository, so the dev build is
 uploaded as an artefact; running the workflow by hand with `instance: dev`
 **replaces production at the same URL**.
