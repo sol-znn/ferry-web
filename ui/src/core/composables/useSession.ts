@@ -1,6 +1,6 @@
 import {computed, ref, shallowRef, watch} from 'vue'
 import {api} from '@/core/api'
-import {RelayPool, type NostrEvent, type RelayStatus} from '@/core/nostr'
+import {RelayPool, type AcceptEvent, type NostrEvent, type RelayStatus} from '@/core/nostr'
 import {owed, type HandoffType} from '@/core/handoffs'
 import {useFerry} from '@/core/composables/useFerry'
 import {syncNow} from '@/core/composables/useAutoRefresh'
@@ -278,8 +278,16 @@ async function join(code?: string, attachTo?: string) {
       // No `since`: a party who joins late must receive what was already said,
       // and a room only ever carries one conversation.
       [{kinds: [r.kind], authors: [r.pubKey], '#d': [r.roomId], limit: 100}],
-      (ev) => void receive(ev),
-      () => (relays.value = p.status),
+      (ev, acceptEvent) => {
+        if (pool.value !== p) return
+        return receive(ev, acceptEvent)
+      },
+      () => {
+        if (pool.value === p) relays.value = p.status
+      },
+      (message) => {
+        if (pool.value === p) error.value = message
+      },
     )
     relays.value = p.status
     // Announced after subscribing, never before: a hello published while we
@@ -566,17 +574,21 @@ async function applyValue(what: string, fn: () => Promise<unknown>) {
  * event id -- the id would only catch the copy this tab sent, not one the same
  * user sent from another tab in the same room.
  */
-async function receive(ev: NostrEvent) {
-  if (!room.value) return
+async function receive(ev: NostrEvent, acceptEvent: AcceptEvent) {
+  const targetRoom = room.value
+  if (!targetRoom) return
   const {body: settings} = useSettings()
 
   let msg: SessionMessage
   try {
-    msg = (await api.sessionOpen(room.value.code, ev)).message
+    msg = (await api.sessionOpen(targetRoom.code, ev)).message
   } catch (e) {
+    if (room.value !== targetRoom) return
     say('in', `A message could not be opened: ${e instanceof Error ? e.message : String(e)}`, false)
     return
   }
+  // A pending verification from a retired pool must not enter the new room.
+  if (room.value !== targetRoom || !acceptEvent()) return
   // Our own message coming back off a relay we published it to. Filtered by
   // peer id rather than by role, because a session usually starts before either
   // side has a swap and therefore before either side has a role.

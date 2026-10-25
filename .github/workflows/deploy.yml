@@ -1,4 +1,4 @@
-name: Build and deploy
+name: Validate and deploy
 
 # The whole deployment: compile Go to WebAssembly, bundle the site around it,
 # hand GitHub Pages a directory of static files. There is no server to
@@ -17,6 +17,8 @@ name: Build and deploy
 # Actions tab — see docs/DEPLOY.md.
 
 on:
+  pull_request:
+    branches: [master, feat/v2]
   push:
     branches: [master]
   # So a deploy can be re-run without an empty commit, and so the development
@@ -24,22 +26,20 @@ on:
   workflow_dispatch:
     inputs:
       instance:
-        description: 'Which instance to publish to Pages'
+        description: "Which instance to publish to Pages"
         type: choice
         options: [prod, dev]
         default: prod
 
-# What Pages needs and nothing else. id-token is for the OIDC handshake
-# deploy-pages uses; there is no long-lived token anywhere.
+# Validation uses read-only repository access, including fork pull requests.
+# Only the deployment job receives Pages and OIDC write permissions.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Never two deploys at once, and never cancel one that is already publishing —
 # an interrupted deploy can leave the site half-updated.
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request' && format('checks-{0}', github.event.pull_request.number) || 'pages' }}
   cancel-in-progress: false
 
 jobs:
@@ -49,19 +49,19 @@ jobs:
       # A push publishes production. Only a hand-run dispatch can say otherwise.
       PUBLISH: ${{ github.event.inputs.instance || 'prod' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # wasm_exec.js is copied out of whichever Go is installed here and
           # must match the compiler that produced ferry.wasm beside it. Pinning
           # the toolchain pins both.
-          go-version: '1.27'
+          go-version: "1.27.2"
           cache-dependency-path: wasm/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version: "24.22.0"
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
@@ -73,9 +73,15 @@ jobs:
           npm_config_allow_git: all
         run: npm ci
 
+      - name: Dependency audit
+        working-directory: ui
+        run: npm run audit:dependencies
+
       - name: Go tests
         working-directory: wasm
-        run: go test ./...
+        run: |
+          go test ./...
+          go test -race ./...
 
       - name: Go vet, both targets
         working-directory: wasm
@@ -94,9 +100,21 @@ jobs:
 
       # The extension boundary, against a stub provider. No chain, no browser
       # and no extension needed — which is why it can run here at all.
+      - name: Solana provider and lint configuration checks
+        working-directory: ui
+        run: |
+          npm run test:solana
+          npm run test:lint-config
+
       - name: Wallet provider checks
         working-directory: ui
         run: npm run wallet:provider
+
+      - name: Relay and loader resource checks
+        working-directory: ui
+        run: |
+          npm run relay:delivery
+          npm run loader:test
 
       # Development first, so the production build is what is left in
       # ui/public/ferry.wasm and dist/ when this job ends. Each smoke run
@@ -107,33 +125,44 @@ jobs:
         run: |
           npm run build:dev
           npm run smoke:dev -- ../dist-dev/ferry.wasm
+          node ../scripts/http-limits.mjs ../dist-dev/ferry.wasm
+          node ../scripts/ws-limits.mjs ../dist-dev/ferry.wasm
 
       - name: Build and smoke the production instance
         working-directory: ui
         run: |
           npm run build
           npm run smoke -- ../dist/ferry.wasm
+          node ../scripts/http-limits.mjs ../dist/ferry.wasm
+          node ../scripts/ws-limits.mjs ../dist/ferry.wasm
 
       # Downloadable rather than published: it is the build to serve locally
       # against a regtest node, and it should not sit on the origin that holds
       # anyone's mainnet swap keys.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ferry-dev
           path: dist-dev
           retention-days: 14
 
       - name: Stage the instance being published
+        if: github.event_name != 'pull_request'
         run: |
           echo "publishing the $PUBLISH instance"
           test -d "$([ "$PUBLISH" = dev ] && echo dist-dev || echo dist)"
           echo "SITE=$([ "$PUBLISH" = dev ] && echo dist-dev || echo dist)" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-pages-artifact@v3
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ${{ env.SITE }}
 
   deploy:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -141,4 +170,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

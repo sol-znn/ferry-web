@@ -5,6 +5,7 @@ package httpx
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -43,9 +44,17 @@ func do(ctx context.Context, req Request) (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody))
+	if resp.ContentLength > MaxBody {
+		return nil, fmt.Errorf("%s: response is %d bytes, over the %d byte limit", req.URL, resp.ContentLength, MaxBody)
+	}
+	// Read one extra byte to distinguish a complete response at the boundary
+	// from a truncated response that would otherwise look successful.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > MaxBody {
+		return nil, fmt.Errorf("%s: response exceeds the %d byte limit", req.URL, MaxBody)
 	}
 	return &Response{Status: resp.StatusCode, StatusText: resp.Status, Body: raw}, nil
 }

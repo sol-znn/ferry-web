@@ -29,19 +29,23 @@ func do(ctx context.Context, req Request) (*Response, error) {
 	// host that accepts the connection and then says nothing would hold the
 	// goroutine past its own timeout, because the promise simply never settles.
 	controller := js.Global().Get("AbortController")
-	var signal js.Value
+	var signal, abortController js.Value
 	if controller.Truthy() {
-		c := controller.New()
-		signal = c.Get("signal")
-		stop := context.AfterFunc(ctx, func() { c.Call("abort") })
+		abortController = controller.New()
+		signal = abortController.Get("signal")
+		stop := context.AfterFunc(ctx, func() { abortController.Call("abort") })
 		defer stop()
+	}
+	abort := func() {
+		if abortController.Truthy() {
+			abortController.Call("abort")
+		}
 	}
 
 	opts := map[string]any{
 		"method": req.Method,
-		// Explicit rather than relying on the defaults: no cookies, no
-		// credentials, no redirect chasing that could land the request on a
-		// different origin than the one the user named in settings.
+		// Omit ambient credentials and apply Fetch's CORS checks. Redirects
+		// can reach another CORS-enabled origin; they are followed explicitly.
 		"credentials": "omit",
 		"mode":        "cors",
 		"redirect":    "follow",
@@ -68,6 +72,15 @@ func do(ctx context.Context, req Request) (*Response, error) {
 		}
 		return nil, wrapNetworkErr(req.URL, err)
 	}
+	bodyStream := resp.Get("body")
+	// Cancelling is required even on an early Content-Length rejection: merely
+	// returning would let the browser continue downloading an attacker body.
+	cancelBody := func() {
+		abort()
+		if bodyStream.Truthy() {
+			_, _ = await(ctx, bodyStream.Call("cancel"))
+		}
+	}
 
 	// Content-Length is advisory — it can be absent or a lie — so it is used
 	// only to refuse an obviously oversized body before downloading it. The
@@ -75,24 +88,41 @@ func do(ctx context.Context, req Request) (*Response, error) {
 	if cl := resp.Get("headers").Call("get", "content-length"); cl.Type() == js.TypeString {
 		var n int64
 		if _, ferr := fmt.Sscanf(cl.String(), "%d", &n); ferr == nil && n > MaxBody {
+			cancelBody()
 			return nil, fmt.Errorf("%s: response is %d bytes, over the %d byte limit", req.URL, n, MaxBody)
 		}
 	}
-
-	buf, err := await(ctx, resp.Call("arrayBuffer"))
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%s: timed out after %s while reading the response", req.URL, timeout)
+	var body []byte
+	if bodyStream.Truthy() {
+		reader := bodyStream.Call("getReader")
+		defer reader.Call("releaseLock")
+		stopReading := func() {
+			abort()
+			_, _ = await(ctx, reader.Call("cancel"))
 		}
-		return nil, fmt.Errorf("%s: reading the response failed: %w", req.URL, err)
+		for {
+			chunk, err := await(ctx, reader.Call("read"))
+			if err != nil {
+				stopReading()
+				if ctx.Err() != nil {
+					return nil, fmt.Errorf("%s: timed out after %s while reading the response", req.URL, timeout)
+				}
+				return nil, fmt.Errorf("%s: reading the response failed: %w", req.URL, err)
+			}
+			if chunk.Get("done").Bool() {
+				break
+			}
+			u8 := chunk.Get("value")
+			n := u8.Get("byteLength").Int()
+			if n > MaxBody-len(body) {
+				stopReading()
+				return nil, fmt.Errorf("%s: response exceeds the %d byte limit", req.URL, MaxBody)
+			}
+			start := len(body)
+			body = append(body, make([]byte, n)...)
+			js.CopyBytesToGo(body[start:], u8)
+		}
 	}
-	u8 := js.Global().Get("Uint8Array").New(buf)
-	n := u8.Get("byteLength").Int()
-	if n > MaxBody {
-		n = MaxBody
-	}
-	body := make([]byte, n)
-	js.CopyBytesToGo(body, u8)
 
 	return &Response{
 		Status:     resp.Get("status").Int(),

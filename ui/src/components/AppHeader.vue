@@ -190,12 +190,12 @@ const chips = computed(() => {
         <span class="font-mono">npm run {{ FERRY_ENV === 'dev' ? 'wasm:dev' : 'wasm' }}</span
         >.
       </p>
-      <p v-if="configError" class="text-xs text-destructive">error: {{ configError }}</p>
+      <p v-if="configError" class="text-xs break-all text-destructive">error: {{ configError }}</p>
       <div v-else class="flex flex-wrap items-center gap-1.5">
         <span
           v-for="c in chips"
           :key="c.key"
-          class="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-2.5 text-xs"
+          class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-2.5 text-xs"
         >
           <span
             class="size-1.5 shrink-0 rounded-full"
@@ -206,9 +206,9 @@ const chips = computed(() => {
             }"
             aria-hidden="true"
           />
-          <span class="text-ledger text-muted-foreground">{{ c.label }}</span>
+          <span class="shrink-0 text-ledger text-muted-foreground">{{ c.label }}</span>
           <span
-            class="font-mono"
+            class="min-w-0 break-all font-mono"
             :class="{
               'text-destructive': c.tone === 'bad',
               'text-muted-foreground': c.tone === 'idle',

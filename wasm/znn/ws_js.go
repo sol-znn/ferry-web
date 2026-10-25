@@ -45,6 +45,10 @@ const wsIdle = 2 * time.Minute
 // otherwise consume the whole call budget before the request was even sent.
 const wsHandshake = 15 * time.Second
 
+// Match the HTTP transport's decoded body limit. Measure in JavaScript before
+// copying into Go or parsing untrusted JSON.
+const wsFrameBytes = 8 << 20
+
 var (
 	wsMu    sync.Mutex
 	wsConns = map[string]*wsConn{}
@@ -105,7 +109,16 @@ func wsCall(ctx context.Context, url string, request func(id int) ([]byte, error
 	}
 
 	select {
-	case frame := <-reply:
+	case frame, ok := <-reply:
+		if !ok {
+			conn.mu.Lock()
+			err := conn.failed
+			conn.mu.Unlock()
+			if err == nil {
+				err = errors.New("the websocket closed before answering")
+			}
+			return nil, err
+		}
 		return frame, nil
 	case <-ctx.Done():
 		return nil, fmt.Errorf("%s: no answer before the call timed out", url)
@@ -240,9 +253,26 @@ func newWSConn(url string) *wsConn {
 // deliver routes one frame to the call that is waiting for it.
 func (c *wsConn) deliver(data js.Value) {
 	if data.Type() != js.TypeString {
-		return // a node sending binary frames is not speaking this protocol
+		c.fail(errors.New("the Zenon websocket sent a binary frame; JSON-RPC requires text"))
+		c.close()
+		return
 	}
-	frame := []byte(data.String())
+	// syscall/js cannot read a primitive string's properties directly. Boxing
+	// lets us inspect UTF-16 length without copying its contents into Go.
+	if js.Global().Get("Object").Invoke(data).Get("length").Int() > wsFrameBytes {
+		c.fail(fmt.Errorf("the Zenon websocket response exceeds the %d byte limit", wsFrameBytes))
+		c.close()
+		return
+	}
+	encoded := js.Global().Get("TextEncoder").New().Call("encode", data)
+	size := encoded.Get("byteLength").Int()
+	if size > wsFrameBytes {
+		c.fail(fmt.Errorf("the Zenon websocket response exceeds the %d byte limit", wsFrameBytes))
+		c.close()
+		return
+	}
+	frame := make([]byte, size)
+	js.CopyBytesToGo(frame, encoded)
 	id, ok := frameID(frame)
 	if !ok {
 		return
@@ -284,6 +314,7 @@ func (c *wsConn) fail(err error) {
 func (c *wsConn) close() {
 	c.mu.Lock()
 	sock, funcs := c.sock, c.funcs
+	c.sock = js.Undefined()
 	c.funcs = nil
 	c.open = false
 	c.mu.Unlock()
@@ -291,6 +322,9 @@ func (c *wsConn) close() {
 	if sock.Truthy() {
 		func() {
 			defer func() { _ = recover() }()
+			sock.Set("onopen", js.Null())
+			sock.Set("onmessage", js.Null())
+			sock.Set("onerror", js.Null())
 			sock.Set("onclose", js.Null())
 			sock.Call("close")
 		}()

@@ -70,6 +70,16 @@ export function loadState(): LoadState {
 
 declare const __WASM_VERSION__: string
 
+// Generous relative to the shipped ~10 MiB module.
+// Deadlines refuse a stalled load rather than leaving controls on a spinner.
+export const LOAD_LIMITS = Object.freeze({
+  wasmBytes: 32 * 1024 * 1024,
+  fetchMs: 60_000,
+  scriptMs: 20_000,
+  compileMs: 60_000,
+  readyMs: 20_000,
+})
+
 /**
  * Where the module and Go's runtime shim are fetched from.
  *
@@ -85,7 +95,7 @@ declare const __WASM_VERSION__: string
  * content hash.
  */
 function assetURL(name: string): string {
-  const base = import.meta.env.BASE_URL || './'
+  const base = import.meta.env?.BASE_URL || './'
   return `${base}${name}?v=${__WASM_VERSION__}`
 }
 
@@ -98,6 +108,10 @@ export function startWasm(): Promise<void> {
 }
 
 async function boot(): Promise<void> {
+  const lifetime = new AbortController()
+  // Only the module started by this loader may declare readiness. An old or
+  // partially installed API must not make a failed new load look successful.
+  clearEngineAPI()
   try {
     // wasm_exec.js is Go's own runtime shim, copied verbatim out of the Go
     // distribution at build time rather than vendored by hand, so it always
@@ -105,7 +119,13 @@ async function boot(): Promise<void> {
     await loadScript(assetURL('wasm_exec.js'))
     if (!window.Go) throw new Error('the Go runtime shim did not define window.Go')
 
-    const bytes = await fetchWithProgress(assetURL('ferry.wasm'))
+    emit({phase: 'fetching', progress: 0, loadedBytes: 0, totalBytes: 0})
+    const bytes = await fetchBounded(
+      assetURL('ferry.wasm'),
+      LOAD_LIMITS.wasmBytes,
+      LOAD_LIMITS.fetchMs,
+      true,
+    )
 
     emit({phase: 'compiling'})
     const go = new window.Go()
@@ -113,20 +133,31 @@ async function boot(): Promise<void> {
     // because streaming needs the exact Content-Type application/wasm and a
     // static host that gets it wrong would fail with no way to recover. Reading
     // the body ourselves also gives the progress the download needs.
-    const {instance} = await WebAssembly.instantiate(bytes, go.importObject)
+    const {instance} = await deadline(
+      WebAssembly.instantiate(bytes, go.importObject),
+      LOAD_LIMITS.compileMs,
+      'Compiling the signing engine timed out. Reload using a supported browser and trusted build.',
+    )
 
     emit({phase: 'starting'})
     // The module's main() blocks forever after installing window.ferryWasm, so
     // this promise is not awaited: awaiting it would hang until the page closes.
-    // It is watched only so a crash inside Go surfaces instead of vanishing.
-    void go.run(instance).catch((e: unknown) => {
-      emit({phase: 'failed', error: `the signing engine stopped: ${String(e)}`})
-    })
+    // Any return, including a clean exit, means the long-lived API is gone.
+    const stopped = (error: Error) => {
+      window.ferryWasm = undefined
+      lifetime.abort(error)
+      emit({phase: 'failed', error: error.message})
+    }
+    void go.run(instance).then(
+      () => stopped(new Error('the signing engine exited; reload before using it')),
+      (e: unknown) => stopped(new Error(`the signing engine stopped: ${String(e)}`)),
+    )
 
-    await waitForReady()
+    await waitForReady(lifetime.signal)
+    if (lifetime.signal.aborted) throw lifetime.signal.reason
 
     const api = window.ferryWasm
-    if (!api?.ready) {
+    if (!api?.ready || typeof api.call !== 'function' || lifetime.signal.aborted) {
       // Go started but refused to run — the storage probe in main() failed, and
       // it says why. That is a real refusal, not a load error: a swap whose
       // refund key cannot be saved is worse than no swap.
@@ -134,18 +165,51 @@ async function boot(): Promise<void> {
     }
     emit({phase: 'ready', progress: 1})
   } catch (e) {
+    lifetime.abort(e)
+    window.ferryWasm = undefined
     emit({phase: 'failed', error: e instanceof Error ? e.message : String(e)})
     throw e
   }
+}
+
+function clearEngineAPI() {
+  window.ferryWasm = undefined
+  window.Go = undefined
 }
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const el = document.createElement('script')
     el.src = src
-    el.onload = () => resolve()
-    el.onerror = () => reject(new Error(`could not load ${src}`))
-    document.head.appendChild(el)
+    el.referrerPolicy = 'no-referrer'
+    const cleanup = () => {
+      clearTimeout(timer)
+      el.onload = null
+      el.onerror = null
+      el.remove()
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(
+        new Error(
+          'Loading the runtime shim timed out. Reload after checking this host or use a saved trusted build.',
+        ),
+      )
+    }, LOAD_LIMITS.scriptMs)
+    el.onload = () => {
+      cleanup()
+      resolve()
+    }
+    el.onerror = () => {
+      cleanup()
+      reject(new Error(`could not load ${src}`))
+    }
+    try {
+      document.head.appendChild(el)
+    } catch (e) {
+      cleanup()
+      reject(e)
+    }
   })
 }
 
@@ -156,35 +220,75 @@ function loadScript(src: string): Promise<void> {
  * which is the common case for a gzipped .wasm — so the bar falls back to a
  * byte counter rather than pretending to know a percentage it does not.
  */
-async function fetchWithProgress(url: string): Promise<ArrayBuffer> {
-  emit({phase: 'fetching', progress: 0, loadedBytes: 0, totalBytes: 0})
-  const res = await fetch(url)
-  if (!res.ok)
-    throw new Error(`could not fetch the signing engine: ${res.status} ${res.statusText}`)
-
-  const total = Number(res.headers.get('content-length') ?? 0)
-  emit({totalBytes: total})
-
-  if (!res.body) return res.arrayBuffer()
-
-  const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
-  let loaded = 0
-  for (;;) {
-    const {done, value} = await reader.read()
-    if (done) break
-    chunks.push(value)
-    loaded += value.length
-    emit({loadedBytes: loaded, progress: total ? Math.min(loaded / total, 1) : 0})
+async function fetchBounded(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+  progress = false,
+): Promise<ArrayBuffer> {
+  const controller = new AbortController()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  const work = async () => {
+    const res = await fetch(url, {signal: controller.signal})
+    if (!res.ok) throw new Error(`could not fetch ${url}: ${res.status} ${res.statusText}`)
+    const rawLength = Number(res.headers.get('content-length') ?? 0)
+    const total = Number.isFinite(rawLength) && rawLength > 0 ? rawLength : 0
+    if (total > maxBytes)
+      throw new Error(`Refusing ${url}: download exceeds the ${maxBytes / 1048576} MiB limit.`)
+    if (progress) emit({totalBytes: total})
+    if (!res.body)
+      throw new Error(`Cannot stream ${url}. Use a supported browser and a complete trusted build.`)
+    reader = res.body.getReader()
+    const chunks: Uint8Array[] = []
+    let loaded = 0
+    for (;;) {
+      const {done, value} = await reader.read()
+      if (done) break
+      loaded += value.byteLength
+      if (loaded > maxBytes)
+        throw new Error(`Refusing ${url}: download exceeds the ${maxBytes / 1048576} MiB limit.`)
+      chunks.push(value)
+      if (progress) emit({loadedBytes: loaded, progress: total ? Math.min(loaded / total, 1) : 0})
+    }
+    const out = new Uint8Array(loaded)
+    let at = 0
+    for (const chunk of chunks) {
+      out.set(chunk, at)
+      at += chunk.length
+    }
+    return out.buffer
   }
-
-  const out = new Uint8Array(loaded)
-  let at = 0
-  for (const c of chunks) {
-    out.set(c, at)
-    at += c.length
+  try {
+    return await deadline(
+      work(),
+      timeoutMs,
+      `Downloading ${url} timed out. Check connectivity or use a saved trusted build.`,
+    )
+  } finally {
+    // Abort covers both response headers and body reads. Do not await cancel:
+    // a stalled/custom stream must not keep the timeout rejection pending.
+    controller.abort()
+    void reader?.cancel().catch(() => {})
+    try {
+      reader?.releaseLock()
+    } catch {
+      /* a read may still be pending */
+    }
   }
-  return out.buffer
+}
+
+async function deadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -200,26 +304,38 @@ async function fetchWithProgress(url: string): Promise<ArrayBuffer> {
  * The timeout is the fourth: a module that never reaches main() should say so
  * rather than hang.
  */
-function waitForReady(timeoutMs = 20000): Promise<void> {
-  if (window.ferryWasm) return Promise.resolve()
+function waitForReady(signal: AbortSignal, timeoutMs = LOAD_LIMITS.readyMs): Promise<void> {
+  const ready = () => window.ferryWasm?.ready && typeof window.ferryWasm.call === 'function'
+  if (signal.aborted) return Promise.reject(signal.reason)
+  if (ready()) return Promise.resolve()
+  if (window.ferryWasm?.error) return Promise.reject(new Error(window.ferryWasm.error))
   return new Promise((resolve, reject) => {
     const cleanup = () => {
-      window.removeEventListener('ferry-wasm-ready', done)
+      window.removeEventListener('ferry-wasm-ready', check)
+      signal.removeEventListener('abort', failed)
       clearInterval(poll)
       clearTimeout(timer)
     }
-    const done = () => {
-      cleanup()
-      resolve()
+    const check = () => {
+      if (ready()) {
+        cleanup()
+        resolve()
+      } else if (window.ferryWasm?.error) {
+        cleanup()
+        reject(new Error(window.ferryWasm.error))
+      }
     }
-    const poll = setInterval(() => {
-      if (window.ferryWasm) done()
-    }, 50)
+    const failed = () => {
+      cleanup()
+      reject(signal.reason)
+    }
+    const poll = setInterval(check, 50)
     const timer = setTimeout(() => {
       cleanup()
       reject(new Error('the signing engine did not start within 20 seconds'))
     }, timeoutMs)
-    window.addEventListener('ferry-wasm-ready', done)
+    window.addEventListener('ferry-wasm-ready', check)
+    signal.addEventListener('abort', failed, {once: true})
   })
 }
 
@@ -231,6 +347,7 @@ function waitForReady(timeoutMs = 20000): Promise<void> {
  */
 export async function wasmCall<T>(method: string, body?: unknown): Promise<T> {
   await startWasm()
+  if (state.phase !== 'ready') throw new Error(state.error || 'the signing engine is not ready')
   const call = window.ferryWasm?.call
   if (!call) throw new Error(window.ferryWasm?.error || 'the signing engine is not available')
 

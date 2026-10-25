@@ -16,17 +16,22 @@
     "smoke:dev": "node ../scripts/smoke.mjs --env=dev",
     "wallet:devnet": "node ../scripts/wallet-devnet.mjs",
     "wallet:provider": "node ../scripts/wallet-provider.mjs",
+    "relay:delivery": "node --test ../scripts/relay-delivery.mjs",
+    "loader:test": "node --test ../scripts/wasm-loader.test.mjs",
     "test": "cd ../wasm && go test ./... && cd ../ui && npm run wallet:provider && npm run smoke",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"**/*.{ts,vue,json,md}\""
+    "format": "prettier --write \"**/*.{ts,vue,json,md}\"",
+    "test:solana": "node --test ../scripts/solana-provider.test.mjs",
+    "test:lint-config": "node --test ../scripts/lint-config.test.mjs",
+    "audit:dependencies": "npm audit --omit=dev && npm audit"
   },
   "dependencies": {
     "@lucide/vue": "^1.20.0",
-    "@solana/web3.js": "^1.98.4",
+    "@solana/web3.js": "^1.99.0",
     "@vueuse/core": "^14.2.0",
-    "nom-ui": "github:digitalSloth/nom-ui",
+    "nom-ui": "github:digitalSloth/nom-ui#63f755a52cf6ee3665d3755755c506e3aa191bd4",
     "tweetnacl": "^1.0.3",
     "vue": "^3.4.0",
     "vue-router": "^4.2.0"
@@ -35,17 +40,21 @@
     "@tailwindcss/vite": "^4.1.18",
     "@types/chrome": "^0.0.260",
     "@types/node": "^22.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.54.0",
-    "@typescript-eslint/parser": "^8.54.0",
     "@vitejs/plugin-vue": "^6.0.4",
-    "@vue/eslint-config-typescript": "^14.6.0",
-    "eslint": "^9.39.2",
+    "eslint": "^10.13.0",
     "eslint-plugin-vue": "^10.7.0",
     "prettier": "^3.2.0",
     "tailwindcss": "^4.0.0",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.3.0",
-    "vite": "^7.3.1",
-    "vue-tsc": "^3.3.3"
+    "vite": "^7.3.7",
+    "vue-tsc": "^3.3.3",
+    "typescript-eslint": "^8.71.2",
+    "vue-eslint-parser": "^10.4.1"
+  },
+  "overrides": {
+    "@solana/web3.js": {
+      "jayson": "5.0.0"
+    }
   }
 }
